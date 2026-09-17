@@ -29,6 +29,7 @@ jobs:
       - name: Build orchestrator
         run: npm run build -w @insuranos/orchestrator
 
+      # Keep the API key in GitHub Secrets; never print or commit it.
       - name: Verify AssemblyAI secret is available
         run: |
           if [ -z "$ASSEMBLYAI_API_KEY" ]; then
