@@ -1,0 +1,39 @@
+name: Insuranos Orchestrator CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-orchestrator:
+    runs-on: ubuntu-latest
+    env:
+      ASSEMBLYAI_API_KEY: ${{ secrets.ASSEMBLYAI_API_KEY }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Typecheck orchestrator
+        run: npm run typecheck -w @insuranos/orchestrator
+
+      - name: Build orchestrator
+        run: npm run build -w @insuranos/orchestrator
+
+      - name: Verify AssemblyAI secret is available
+        run: |
+          if [ -z "$ASSEMBLYAI_API_KEY" ]; then
+            echo "ASSEMBLYAI_API_KEY is not configured in GitHub repository secrets."
+            exit 1
+          fi
+          echo "AssemblyAI API key is configured (value is intentionally not printed)."
