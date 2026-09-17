@@ -1,4 +1,4 @@
-name: Insuranos Orchestrator CI
+name: Insuranos CI
 
 on:
   push:
@@ -7,29 +7,27 @@ on:
     branches: [main]
 
 jobs:
-  build-orchestrator:
+  build:
     runs-on: ubuntu-latest
     env:
       ASSEMBLYAI_API_KEY: ${{ secrets.ASSEMBLYAI_API_KEY }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 20
-
       - name: Install dependencies
         run: npm install
-
       - name: Typecheck orchestrator
         run: npm run typecheck -w @insuranos/orchestrator
-
       - name: Build orchestrator
         run: npm run build -w @insuranos/orchestrator
-
-      # Keep the API key in GitHub Secrets; never print or commit it.
+      - name: Typecheck web
+        run: npm run typecheck -w @insuranos/web
+      - name: Build web
+        run: npm run build -w @insuranos/web
       - name: Verify AssemblyAI secret is available
         run: |
           if [ -z "$ASSEMBLYAI_API_KEY" ]; then
