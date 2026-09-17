@@ -1,6 +1,24 @@
 import { computeCompleteness, REQUIRED_FIELDS } from "@insuranos/schema";
 import { IClaimRepository } from "./repository/IClaimRepository";
 import { Phase } from "./types";
-export async function checkPhaseAdvance(repo:IClaimRepository,sessionId:string,lastToolName:string,lastToolFailed:boolean):Promise<Phase|null>{const s=await repo.getSession(sessionId);if(!s)return null;const c=computeCompleteness(s.claim_data);switch(s.current_phase){case"opening_safety":return c.fields.filter(f=>f.field.startsWith("safety.")).every(f=>f.status!=="missing")?"grounding_consent":null;case"grounding_consent":return null;case"narrative":return c.fields.find(f=>f.field==="incident.description_summary")?.status!=="missing"?"structured_gathering":null;case"structured_gathering":return c.missingRequired.length===0?"evidence":null;case"evidence":case"review":return null;case"output_generation":if(lastToolName==="generate_report")return lastToolFailed?"structured_gathering":"closing";return null;case"closing":return null}}
+
+export async function checkPhaseAdvance(repo:IClaimRepository,sessionId:string,lastToolName:string,lastToolFailed:boolean):Promise<Phase|null>{
+  const s=await repo.getSession(sessionId);if(!s)return null;
+  const c=computeCompleteness(s.claim_data);
+  switch(s.current_phase){
+    case"opening_safety":return c.fields.filter(f=>f.field.startsWith("safety.")).every(f=>f.status!=="missing")?"grounding_consent":null;
+    case"grounding_consent":return null;
+    case"narrative":return c.fields.find(f=>f.field==="incident.description_summary")?.status!=="missing"?"structured_gathering":null;
+    case"structured_gathering":return c.missingRequired.length===0?"evidence":null;
+    case"evidence":return null;
+    case"review":return null;
+    case"output_generation":
+      if(lastToolName==="generate_report"&&lastToolFailed)return"structured_gathering";
+      if(lastToolName==="send_report_email")return"closing";
+      return null;
+    case"closing":return null;
+  }
+}
+
 export async function advancePhase(repo:IClaimRepository,sessionId:string,to:Phase){await repo.setPhase(sessionId,to);await repo.logEvent(sessionId,"phase_transition",{to})}
 export function isRequiredFieldsSatisfiable(){return REQUIRED_FIELDS}
