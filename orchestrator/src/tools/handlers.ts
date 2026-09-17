@@ -7,7 +7,7 @@ import { sendReportEmail } from "../report/sendEmail";
 import { uploadPdf } from "../report/storage";
 export interface ToolContext{repo:IClaimRepository;sessionId:string}
 export interface ToolResult{ok:boolean;result:Record<string,unknown>;triggersPhaseCheck?:boolean}
-const nz=(v:unknown)=>v===undefined?null:v;
+const nz=<T>(v:T|undefined):T|null=>v===undefined?null:v;
 export async function callTool(name:string,args:Record<string,any>,ctx:ToolContext):Promise<ToolResult>{switch(name){
 case"record_safety_status":await ctx.repo.writeFieldGroup(ctx.sessionId,"safety",{injuries_reported:nz(args.injuries_reported),still_at_scene:nz(args.still_at_scene),injury_flag_note:nz(args.injury_flag_note)});if(args.injuries_reported===true){await ctx.repo.setRequiresFollowup(ctx.sessionId,true);await ctx.repo.logEvent(ctx.sessionId,"safety_escalation",{reason:"injuries_reported=true"})}return{ok:true,result:{recorded:"safety"},triggersPhaseCheck:true};
 case"record_incident_basics":await ctx.repo.writeFieldGroup(ctx.sessionId,"incident",{date_time:nz(args.date_time),location:nz(args.location),description_summary:nz(args.description_summary),weather:nz(args.weather),road_conditions:nz(args.road_conditions),police_report_number:nz(args.police_report_number)});return{ok:true,result:{recorded:"incident"},triggersPhaseCheck:true};
