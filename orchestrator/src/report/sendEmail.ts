@@ -1,0 +1,3 @@
+import {Resend} from "resend";
+export async function sendReportEmail(input:{to:string;pdfUrl:string|null;summaryText:string}){const apiKey=process.env.RESEND_API_KEY;if(!apiKey)throw new Error("RESEND_API_KEY missing");const resend=new Resend(apiKey);const {error}=await resend.emails.send({from:process.env.REPORT_FROM_EMAIL??"reports@insuranos.dev",to:input.to,subject:"Your accident claim report",text:input.summaryText,html:`<pre style="font-family:inherit;white-space:pre-wrap;">${escapeHtml(input.summaryText)}</pre>${input.pdfUrl?`<p><a href="${input.pdfUrl}">Download your PDF report</a></p>`:""}`});if(error)throw error}
+function escapeHtml(s:string){return s.replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]!))}
