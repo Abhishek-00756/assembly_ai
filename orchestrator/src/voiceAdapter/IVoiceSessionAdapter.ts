@@ -1,0 +1,3 @@
+export interface VoiceSessionConfig{systemPrompt:string;greeting?:string;tools:unknown[]}
+export interface VoiceSessionHandlers{onAudioOut:(audio:string)=>void;onUserTranscriptPartial:(text:string)=>void;onUserTranscriptFinal:(text:string)=>void;onAgentTranscriptFinal:(text:string)=>void;onToolCall:(callId:string,name:string,args:Record<string,unknown>)=>void;onError:(message:string)=>void;onEnded:()=>void}
+export interface IVoiceSessionAdapter{connect(config:VoiceSessionConfig,handlers:VoiceSessionHandlers):Promise<void>;sendAudioChunk(base64Pcm16:string):void;updateSystemPrompt(systemPrompt:string):void;updateTools(tools:unknown[]):void;sendToolResult(callId:string,result:unknown,isError?:boolean):void;requestReply(instructions?:string):void;end():void}
