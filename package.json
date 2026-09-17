@@ -1,0 +1,6 @@
+{
+  "name":"insuranos",
+  "private":true,
+  "workspaces":["packages/*","orchestrator","web"],
+  "scripts":{"dev:orchestrator":"npm run dev -w @insuranos/orchestrator","dev:web":"npm run dev -w @insuranos/web","install:all":"npm install"}
+}
