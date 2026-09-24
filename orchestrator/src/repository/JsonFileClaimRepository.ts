@@ -5,7 +5,27 @@ import { mutateDb, readDb, randomUUID } from "../localDb";
 export class JsonFileClaimRepository implements IClaimRepository{
  async createClaimant(input:{auth_mode:AuthMode;phone_number?:string;display_name?:string;email?:string}){return mutateDb(db=>{const c={id:randomUUID(),auth_mode:input.auth_mode,phone_number:input.phone_number??null,display_name:input.display_name??null,email:input.email??null,created_at:new Date().toISOString()};db.claimants.push(c);return c})}
  async findClaimantByPhone(phone:string){return readDb().claimants.find(c=>c.phone_number===phone)??null}
- async createSession(claimant_id:string){return mutateDb(db=>{const now=new Date().toISOString();const s:ClaimSession={id:randomUUID(),claimant_id,status:"in_progress",current_phase:"opening_safety",claim_data:emptyClaimData(),requires_followup:false,started_at:now,last_active_at:now,completed_at:null};db.claim_sessions.push(s);return s})}
+ async createSession(claimant_id:string){
+  return mutateDb(db=>{
+    const now=new Date().toISOString();
+    const claimant=db.claimants.find(c=>c.id===claimant_id);
+    const claimData=emptyClaimData();
+    claimData.policy_info.contact_email=claimant?.email??null;
+    const s:ClaimSession={
+      id:randomUUID(),
+      claimant_id,
+      status:"in_progress",
+      current_phase:"opening_safety",
+      claim_data:claimData,
+      requires_followup:false,
+      started_at:now,
+      last_active_at:now,
+      completed_at:null
+    };
+    db.claim_sessions.push(s);
+    return s;
+  })
+ }
  async findActiveSession(id:string){return readDb().claim_sessions.filter(s=>s.claimant_id===id&&["in_progress","paused","review"].includes(s.status)).sort((a,b)=>String(b.last_active_at).localeCompare(String(a.last_active_at)))[0]??null}
  async getSession(id:string){return readDb().claim_sessions.find(s=>s.id===id)??null}
  async writeFieldGroup<K extends keyof ClaimData>(id:string,group:K,value:ClaimData[K]){return mutateDb(db=>{const s=this.must(db,id);s.claim_data={...s.claim_data,[group]:value};s.last_active_at=new Date().toISOString();return s})}
