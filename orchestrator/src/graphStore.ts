@@ -6,11 +6,14 @@ import { ClaimSession } from "./types";
 
 export interface GraphEdge{id:string;session_id:string;incident_group_id:string;subject:string;relation:string;object_value:string;source_tool:string;created_at:string}
 interface GraphFile{edges:GraphEdge[]}
-const dataDir=path.resolve(process.env.INSURANOS_LOCAL_DATA_DIR??".localdata"),file=path.join(dataDir,"knowledge-graph.json");
-const cloud=process.env.REPOSITORY_MODE==="supabase"&&process.env.SUPABASE_URL&&process.env.SUPABASE_SERVICE_ROLE_KEY;
-const supabase:SupabaseClient|null=cloud?createClient(process.env.SUPABASE_URL!,process.env.SUPABASE_SERVICE_ROLE_KEY!,{auth:{persistSession:false}}):null;
-async function localRead():Promise<GraphFile>{try{return JSON.parse(await fs.readFile(file,"utf8")) as GraphFile}catch{return{edges:[]}}}
-async function localWrite(value:GraphFile){await fs.mkdir(dataDir,{recursive:true});await fs.writeFile(file,JSON.stringify(value,null,2),"utf8")}
+function dataDir(){return path.resolve(process.env.INSURANOS_LOCAL_DATA_DIR??".localdata")}
+function graphFile(){return path.join(dataDir(),"knowledge-graph.json")}
+function supabaseClient():SupabaseClient|null{
+ if(process.env.REPOSITORY_MODE!=="supabase"||!process.env.SUPABASE_URL||!process.env.SUPABASE_SERVICE_ROLE_KEY)return null;
+ return createClient(process.env.SUPABASE_URL,process.env.SUPABASE_SERVICE_ROLE_KEY,{auth:{persistSession:false}});
+}
+async function localRead():Promise<GraphFile>{try{return JSON.parse(await fs.readFile(graphFile(),"utf8")) as GraphFile}catch{return{edges:[]}}}
+async function localWrite(value:GraphFile){await fs.mkdir(dataDir(),{recursive:true});await fs.writeFile(graphFile(),JSON.stringify(value,null,2),"utf8")}
 function value(v:unknown){if(v==null||v==="")return null;return String(v)}
 function edgesFromSession(s:ClaimSession,sourceTool:string):GraphEdge[]{
  const now=new Date().toISOString(),out:GraphEdge[]=[];const add=(subject:string,relation:string,v:unknown)=>{const x=value(v);if(!x||x==="__UNKNOWN__")return;out.push({id:randomUUID(),session_id:s.id,incident_group_id:s.incident_group_id,subject,relation,object_value:x,source_tool:sourceTool,created_at:now})};
@@ -26,6 +29,7 @@ function edgesFromSession(s:ClaimSession,sourceTool:string):GraphEdge[]{
 export class GraphStore{
  async syncSession(session:ClaimSession,sourceTool:string){
   const incoming=edgesFromSession(session,sourceTool);
+  const supabase=supabaseClient();
   if(supabase){
    if(incoming.length){const rows=incoming.map(e=>({id:e.id,session_id:e.session_id,incident_group_id:e.incident_group_id,subject:e.subject,relation:e.relation,object_value:e.object_value,source_tool:e.source_tool,created_at:e.created_at}));await supabase.from("knowledge_graph_edges").upsert(rows,{onConflict:"session_id,subject,relation,object_value"}).throwOnError()}
   }else{
@@ -34,6 +38,7 @@ export class GraphStore{
   return this.findConflicts(session.incident_group_id)
  }
  async edgesForGroup(groupId:string):Promise<GraphEdge[]>{
+  const supabase=supabaseClient();
   if(supabase){const {data,error}=await supabase.from("knowledge_graph_edges").select("*").eq("incident_group_id",groupId);if(error)throw error;return (data??[]) as GraphEdge[]}
   return (await localRead()).edges.filter(e=>e.incident_group_id===groupId)
  }
