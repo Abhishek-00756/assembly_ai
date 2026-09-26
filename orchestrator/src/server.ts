@@ -15,6 +15,10 @@ import { buildSystemPrompt, resumeGroundingMessage } from "./promptBuilder";
 import { CompletenessLoopGuard } from "./completenessLoopGuard";
 import { EventLog } from "./eventLog";
 import { buildIncidentLocation, reverseGeocode, verifyPhoto } from "./phase1";
+import { enrichContext } from "./riskEngine";
+import { GraphStore } from "./graphStore";
+import { CloudMirror } from "./cloudMirror";
+import { CrossInsurerService } from "./crossInsurer";
 import { ClientToOrchestratorEvent, OrchestratorToClientEvent, Phase } from "./types";
 
 const PORT = Number(process.env.ORCHESTRATOR_PORT ?? 8787);
@@ -22,6 +26,10 @@ const repo: IClaimRepository = new JsonFileClaimRepository();
 const eventLog = new EventLog(repo);
 const loopGuard = new CompletenessLoopGuard();
 const localDataDir = path.resolve(process.env.INSURANOS_LOCAL_DATA_DIR ?? ".localdata");
+const graphStore = new GraphStore();
+const cloudMirror = new CloudMirror();
+const crossInsurer = new CrossInsurerService(cloudMirror, graphStore);
+const GRAPH_WRITE_TOOLS = new Set(["record_safety_status","record_incident_basics","record_other_party","record_vehicle_damage","record_evidence","record_policyholder_info","mark_field_unknown"]);
 
 const PROGRESS_TOOLS = new Set([
   "record_safety_status",
@@ -42,6 +50,32 @@ interface ActiveCall {
 
 function sendToClient(client: WebSocket, event: OrchestratorToClientEvent) {
   if (client.readyState === WebSocket.OPEN) client.send(JSON.stringify(event));
+}
+
+async function syncDerivedState(sessionId:string,sourceTool:string){
+  const session=await repo.getSession(sessionId);
+  if(!session)return[] as string[];
+  let conflicts:string[]=[];
+  try{conflicts=await graphStore.syncSession(session,sourceTool)}catch(error){await eventLog.toolCall(sessionId,"knowledge_graph_sync",false,[])}
+  try{
+    const claimant=await repo.getClaimant(session.claimant_id);
+    if(claimant&&cloudMirror.enabled)await cloudMirror.sync(claimant,session);
+  }catch{await eventLog.toolCall(sessionId,"cloud_mirror_sync",false,[])}
+  if((sourceTool==="record_incident_basics"||sourceTool==="device_gps")&&session.claim_data.incident_location&&session.claim_data.incident.date_time){
+    try{const context=await enrichContext(session);if(context)await repo.writeFieldGroup(sessionId,"context_factors",context)}catch{await eventLog.toolCall(sessionId,"risk_context_enrichment",false,[])}
+  }
+  return conflicts;
+}
+
+async function reconcileAtReview(call:ActiveCall){
+  const session=await repo.getSession(call.sessionId);
+  if(!session)return;
+  try{
+    const result=await crossInsurer.reconcile(session);
+    await repo.writeFieldGroup(call.sessionId,"cross_party_context",{incident_group_id:session.incident_group_id,related_session_count:result.related_session_count,grounded_narrative:result.grounded_narrative,conflicts:result.conflicts,checked_at:new Date().toISOString()});
+    sendToClient(call.clientWs,{type:"cross_insurer_update",related_session_count:result.related_session_count,conflicts:result.conflicts,grounded_narrative:result.grounded_narrative});
+    if(result.conflicts.length)call.voice.requestReply("A cross-party consistency check found conflicting claim details. Ask the caller to clarify the following before confirmation: "+result.conflicts.join("; ")+". Do not decide which party is correct.");
+  }catch(error){await eventLog.toolCall(call.sessionId,"cross_insurer_reconcile",false,["error"])}
 }
 
 async function pushPhaseTools(call: ActiveCall) {
