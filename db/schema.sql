@@ -41,6 +41,9 @@ create table if not exists knowledge_graph_edges (
 );
 create index if not exists idx_knowledge_graph_group on knowledge_graph_edges (incident_group_id);
 create index if not exists idx_knowledge_graph_subject_relation on knowledge_graph_edges (subject, relation);
+alter table knowledge_graph_edges drop constraint if exists knowledge_graph_edges_session_id_subject_relation_object_value_key;
+alter table knowledge_graph_edges drop constraint if exists knowledge_graph_edges_session_id_subject_relation_key;
+alter table knowledge_graph_edges add constraint knowledge_graph_edges_session_id_subject_relation_key unique (session_id, subject, relation);
 create table if not exists report_artifacts (
   id uuid primary key default gen_random_uuid(),
   session_id uuid not null unique references claim_sessions(id) on delete cascade,
