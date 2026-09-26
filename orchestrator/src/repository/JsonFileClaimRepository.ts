@@ -5,7 +5,8 @@ import { mutateDb, readDb, randomUUID } from "../localDb";
 export class JsonFileClaimRepository implements IClaimRepository{
  async createClaimant(input:{auth_mode:AuthMode;phone_number?:string;display_name?:string;email?:string}){return mutateDb(db=>{const c={id:randomUUID(),auth_mode:input.auth_mode,phone_number:input.phone_number??null,display_name:input.display_name??null,email:input.email??null,created_at:new Date().toISOString()};db.claimants.push(c);return c})}
  async findClaimantByPhone(phone:string){return readDb().claimants.find(c=>c.phone_number===phone)??null}
- async createSession(claimant_id:string){
+ async getClaimant(id:string){return readDb().claimants.find(c=>c.id===id)??null}
+ async createSession(claimant_id:string,incident_group_id?:string){
   return mutateDb(db=>{
     const now=new Date().toISOString();
     const claimant=db.claimants.find(c=>c.id===claimant_id);
@@ -14,6 +15,7 @@ export class JsonFileClaimRepository implements IClaimRepository{
     const s:ClaimSession={
       id:randomUUID(),
       claimant_id,
+      incident_group_id:incident_group_id??randomUUID(),
       status:"in_progress",
       current_phase:"opening_safety",
       claim_data:claimData,

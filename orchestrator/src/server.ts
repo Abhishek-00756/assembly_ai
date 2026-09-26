@@ -15,6 +15,10 @@ import { buildSystemPrompt, resumeGroundingMessage } from "./promptBuilder";
 import { CompletenessLoopGuard } from "./completenessLoopGuard";
 import { EventLog } from "./eventLog";
 import { buildIncidentLocation, reverseGeocode, verifyPhoto } from "./phase1";
+import { enrichContext } from "./riskEngine";
+import { GraphStore } from "./graphStore";
+import { CloudMirror } from "./cloudMirror";
+import { CrossInsurerService } from "./crossInsurer";
 import { ClientToOrchestratorEvent, OrchestratorToClientEvent, Phase } from "./types";
 
 const PORT = Number(process.env.ORCHESTRATOR_PORT ?? 8787);
@@ -22,6 +26,10 @@ const repo: IClaimRepository = new JsonFileClaimRepository();
 const eventLog = new EventLog(repo);
 const loopGuard = new CompletenessLoopGuard();
 const localDataDir = path.resolve(process.env.INSURANOS_LOCAL_DATA_DIR ?? ".localdata");
+const graphStore = new GraphStore();
+const cloudMirror = new CloudMirror();
+const crossInsurer = new CrossInsurerService(cloudMirror, graphStore);
+const GRAPH_WRITE_TOOLS = new Set(["record_safety_status","record_incident_basics","record_other_party","record_vehicle_damage","record_evidence","record_policyholder_info","mark_field_unknown"]);
 
 const PROGRESS_TOOLS = new Set([
   "record_safety_status",
@@ -42,6 +50,32 @@ interface ActiveCall {
 
 function sendToClient(client: WebSocket, event: OrchestratorToClientEvent) {
   if (client.readyState === WebSocket.OPEN) client.send(JSON.stringify(event));
+}
+
+async function syncDerivedState(sessionId:string,sourceTool:string){
+  const session=await repo.getSession(sessionId);
+  if(!session)return[] as string[];
+  let conflicts:string[]=[];
+  try{conflicts=await graphStore.syncSession(session,sourceTool)}catch(error){await eventLog.toolCall(sessionId,"knowledge_graph_sync",false,[])}
+  try{
+    const claimant=await repo.getClaimant(session.claimant_id);
+    if(claimant&&cloudMirror.enabled)await cloudMirror.sync(claimant,session);
+  }catch{await eventLog.toolCall(sessionId,"cloud_mirror_sync",false,[])}
+  if((sourceTool==="record_incident_basics"||sourceTool==="device_gps")&&session.claim_data.incident_location&&session.claim_data.incident.date_time){
+    try{const context=await enrichContext(session);if(context)await repo.writeFieldGroup(sessionId,"context_factors",context)}catch{await eventLog.toolCall(sessionId,"risk_context_enrichment",false,[])}
+  }
+  return conflicts;
+}
+
+async function reconcileAtReview(call:ActiveCall){
+  const session=await repo.getSession(call.sessionId);
+  if(!session||!crossInsurer.enabled)return;
+  try{
+    const result=await crossInsurer.reconcile(session);
+    await repo.writeFieldGroup(call.sessionId,"cross_party_context",{incident_group_id:session.incident_group_id,related_session_count:result.related_session_count,grounded_narrative:result.grounded_narrative,conflicts:result.conflicts,checked_at:new Date().toISOString()});
+    sendToClient(call.clientWs,{type:"cross_insurer_update",related_session_count:result.related_session_count,conflicts:result.conflicts,grounded_narrative:result.grounded_narrative});
+    if(result.conflicts.length)call.voice.requestReply("A cross-party consistency check found conflicting claim details. Ask the caller to clarify the following before confirmation: "+result.conflicts.join("; ")+". Do not decide which party is correct.");
+  }catch(error){await eventLog.toolCall(call.sessionId,"cross_insurer_reconcile",false,["error"])}
 }
 
 async function pushPhaseTools(call: ActiveCall) {
@@ -67,6 +101,7 @@ async function transitionAfterTool(call: ActiveCall, name: string, failed: boole
   if (next) {
     await advancePhase(repo, call.sessionId, next);
     await pushPhaseTools(call);
+    if(next==="review") await reconcileAtReview(call);
     if (next === "output_generation") call.voice.requestReply("The caller confirmed the claim summary. Generate the report now.");
   }
 }
@@ -85,7 +120,11 @@ async function handleToolCall(call: ActiveCall, callId: string, name: string, ar
   if (name === "escalate_safety_concern") call.escalationActive = true;
 
   try {
-    const result = await callTool(name, args, { repo, sessionId: call.sessionId });
+    let result = await callTool(name, args, { repo, sessionId: call.sessionId });
+    if(result.ok&&GRAPH_WRITE_TOOLS.has(name)){
+      const conflicts=await syncDerivedState(call.sessionId,name);
+      if(conflicts.length)result={...result,result:{...result.result,consistency_conflicts:conflicts}};
+    }
     await eventLog.toolCall(call.sessionId, name, result.ok, Object.keys(result.result));
     call.voice.sendToolResult(callId, result.result, !result.ok);
 
@@ -138,7 +177,11 @@ async function handleClientMessage(call: ActiveCall, raw: WebSocket.RawData) {
       if (!parsedType.success) return;
       call.voice.requestReply(`The caller's ${parsedType.data} photo was just received. Acknowledge that specific photo and continue.`);
       const session = await repo.getSession(call.sessionId);
-      if (session) sendToClient(call.clientWs, { type: "completeness_update", completeness: computeCompleteness(session.claim_data) });
+      if (session) {
+        await syncDerivedState(call.sessionId,"photo_uploaded");
+        const latest=await repo.getSession(call.sessionId);
+        if(latest)sendToClient(call.clientWs,{type:"completeness_update",completeness:computeCompleteness(latest.claim_data)});
+      }
       break;
     }
   }
@@ -216,7 +259,9 @@ async function httpHandler(req: http.IncomingMessage, res: http.ServerResponse) 
         display_name: typeof body.display_name === "string" ? body.display_name : undefined,
         email: typeof body.email === "string" ? body.email : undefined,
       });
-      const session = await repo.createSession(claimant.id);
+      const incidentGroupId=typeof body.incident_group_id==="string"&&body.incident_group_id.trim()?body.incident_group_id.trim():undefined;
+      const session = await repo.createSession(claimant.id,incidentGroupId);
+      await syncDerivedState(session.id,"session_created");
       return json(res, 201, { claimant, session });
     }
 
@@ -245,8 +290,10 @@ async function httpHandler(req: http.IncomingMessage, res: http.ServerResponse) 
       const updated = await repo.writeFieldGroup(sessionId, "incident_location", incidentLocation);
       const locationText = address ?? "GPS (" + latitude.toFixed(6) + ", " + longitude.toFixed(6) + ")";
       await repo.writeFieldGroup(sessionId, "incident", { ...updated.claim_data.incident, location: locationText });
-      const latest = await repo.getSession(sessionId);
-      return json(res, 200, { location: latest?.claim_data.incident_location ?? incidentLocation, address: locationText, completeness: latest ? computeCompleteness(latest.claim_data) : null });
+      const latest=await repo.getSession(sessionId);
+      await syncDerivedState(sessionId,"device_gps");
+      const enriched=await repo.getSession(sessionId);
+      return json(res,200,{location:enriched?.claim_data.incident_location??incidentLocation,address:locationText,context_factors:enriched?.claim_data.context_factors??null,completeness:enriched?computeCompleteness(enriched.claim_data):null});
     }
 
     if (req.method === "POST" && url.pathname === "/api/photos") {
