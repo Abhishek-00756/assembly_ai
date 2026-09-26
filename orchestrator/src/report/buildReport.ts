@@ -7,8 +7,8 @@ export function buildReport(claim:ClaimData,completeness:CompletenessResult){
  const gps=claim.incident_location;
  const location=claim.incident.location??gps?.address??(gps?"GPS ("+gps.latitude.toFixed(6)+", "+gps.longitude.toFixed(6)+")":null);
  const coordinates=gps?gps.latitude.toFixed(6)+", "+gps.longitude.toFixed(6):NOT_PROVIDED;
- const verifiedPhotos=claim.evidence.photos.filter(p=>p.verification.photo_verified===true).length;
- const flaggedPhotos=claim.evidence.photos.filter(p=>p.verification.photo_verified===false).length;
+ const verifiedPhotos=claim.evidence.photos.filter(p=>p.verification?.photo_verified===true).length;
+ const flaggedPhotos=claim.evidence.photos.filter(p=>p.verification?.photo_verified===false).length;
  const report_json:ReportJson={
   generated_at:new Date().toISOString(),
   narrative:render(claim.incident.description_summary),
