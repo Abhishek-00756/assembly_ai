@@ -31,9 +31,9 @@ export class GraphStore{
   const incoming=edgesFromSession(session,sourceTool);
   const supabase=supabaseClient();
   if(supabase){
-   if(incoming.length){const rows=incoming.map(e=>({id:e.id,session_id:e.session_id,incident_group_id:e.incident_group_id,subject:e.subject,relation:e.relation,object_value:e.object_value,source_tool:e.source_tool,created_at:e.created_at}));await supabase.from("knowledge_graph_edges").upsert(rows,{onConflict:"session_id,subject,relation,object_value"}).throwOnError()}
+   if(incoming.length){const rows=incoming.map(e=>({id:e.id,session_id:e.session_id,incident_group_id:e.incident_group_id,subject:e.subject,relation:e.relation,object_value:e.object_value,source_tool:e.source_tool,created_at:e.created_at}));await supabase.from("knowledge_graph_edges").upsert(rows,{onConflict:"session_id,subject,relation"}).throwOnError()}
   }else{
-   const db=await localRead();for(const e of incoming){if(!db.edges.some(x=>x.session_id===e.session_id&&x.subject===e.subject&&x.relation===e.relation&&x.object_value===e.object_value))db.edges.push(e)}await localWrite(db)
+   const db=await localRead();for(const e of incoming){db.edges=db.edges.filter(x=>!(x.session_id===e.session_id&&x.subject===e.subject&&x.relation===e.relation));db.edges.push(e)}await localWrite(db)
   }
   return this.findConflicts(session.incident_group_id)
  }
