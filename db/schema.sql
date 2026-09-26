@@ -12,7 +12,7 @@ create table if not exists claimants (
 create table if not exists claim_sessions (
   id uuid primary key default gen_random_uuid(),
   claimant_id uuid not null references claimants(id) on delete cascade,
-  incident_group_id uuid,
+  incident_group_id text,
   status text not null default 'in_progress' check (status in ('in_progress', 'paused', 'review', 'completed')),
   current_phase text not null default 'opening_safety' check (current_phase in ('opening_safety','grounding_consent','narrative','structured_gathering','evidence','review','output_generation','closing')),
   claim_data jsonb not null default '{}'::jsonb,
@@ -23,10 +23,15 @@ create table if not exists claim_sessions (
 );
 create index if not exists idx_claim_sessions_resume on claim_sessions (claimant_id, status);
 create index if not exists idx_claim_sessions_incident_group on claim_sessions (incident_group_id);
+do $ begin
+  if exists (select 1 from information_schema.columns where table_name='claim_sessions' and column_name='incident_group_id' and data_type <> 'text') then
+    alter table claim_sessions alter column incident_group_id type text using incident_group_id::text;
+  end if;
+end $;
 create table if not exists knowledge_graph_edges (
   id uuid primary key default gen_random_uuid(),
   session_id uuid not null references claim_sessions(id) on delete cascade,
-  incident_group_id uuid not null,
+  incident_group_id text not null,
   subject text not null,
   relation text not null,
   object_value text not null,
