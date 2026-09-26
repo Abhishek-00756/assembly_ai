@@ -101,6 +101,7 @@ async function transitionAfterTool(call: ActiveCall, name: string, failed: boole
   if (next) {
     await advancePhase(repo, call.sessionId, next);
     await pushPhaseTools(call);
+    if(next==="review") await reconcileAtReview(call);
     if (next === "output_generation") call.voice.requestReply("The caller confirmed the claim summary. Generate the report now.");
   }
 }
@@ -119,7 +120,11 @@ async function handleToolCall(call: ActiveCall, callId: string, name: string, ar
   if (name === "escalate_safety_concern") call.escalationActive = true;
 
   try {
-    const result = await callTool(name, args, { repo, sessionId: call.sessionId });
+    let result = await callTool(name, args, { repo, sessionId: call.sessionId });
+    if(result.ok&&GRAPH_WRITE_TOOLS.has(name)){
+      const conflicts=await syncDerivedState(call.sessionId,name);
+      if(conflicts.length)result={...result,result:{...result.result,consistency_conflicts:conflicts}};
+    }
     await eventLog.toolCall(call.sessionId, name, result.ok, Object.keys(result.result));
     call.voice.sendToolResult(callId, result.result, !result.ok);
 
@@ -172,7 +177,11 @@ async function handleClientMessage(call: ActiveCall, raw: WebSocket.RawData) {
       if (!parsedType.success) return;
       call.voice.requestReply(`The caller's ${parsedType.data} photo was just received. Acknowledge that specific photo and continue.`);
       const session = await repo.getSession(call.sessionId);
-      if (session) sendToClient(call.clientWs, { type: "completeness_update", completeness: computeCompleteness(session.claim_data) });
+      if (session) {
+        await syncDerivedState(call.sessionId,"photo_uploaded");
+        const latest=await repo.getSession(call.sessionId);
+        if(latest)sendToClient(call.clientWs,{type:"completeness_update",completeness:computeCompleteness(latest.claim_data)});
+      }
       break;
     }
   }
@@ -250,7 +259,9 @@ async function httpHandler(req: http.IncomingMessage, res: http.ServerResponse) 
         display_name: typeof body.display_name === "string" ? body.display_name : undefined,
         email: typeof body.email === "string" ? body.email : undefined,
       });
-      const session = await repo.createSession(claimant.id);
+      const incidentGroupId=typeof body.incident_group_id==="string"&&body.incident_group_id.trim()?body.incident_group_id.trim():undefined;
+      const session = await repo.createSession(claimant.id,incidentGroupId);
+      await syncDerivedState(session.id,"session_created");
       return json(res, 201, { claimant, session });
     }
 
@@ -279,8 +290,10 @@ async function httpHandler(req: http.IncomingMessage, res: http.ServerResponse) 
       const updated = await repo.writeFieldGroup(sessionId, "incident_location", incidentLocation);
       const locationText = address ?? "GPS (" + latitude.toFixed(6) + ", " + longitude.toFixed(6) + ")";
       await repo.writeFieldGroup(sessionId, "incident", { ...updated.claim_data.incident, location: locationText });
-      const latest = await repo.getSession(sessionId);
-      return json(res, 200, { location: latest?.claim_data.incident_location ?? incidentLocation, address: locationText, completeness: latest ? computeCompleteness(latest.claim_data) : null });
+      const latest=await repo.getSession(sessionId);
+      await syncDerivedState(sessionId,"device_gps");
+      const enriched=await repo.getSession(sessionId);
+      return json(res,200,{location:enriched?.claim_data.incident_location??incidentLocation,address:locationText,context_factors:enriched?.claim_data.context_factors??null,completeness:enriched?computeCompleteness(enriched.claim_data):null});
     }
 
     if (req.method === "POST" && url.pathname === "/api/photos") {
