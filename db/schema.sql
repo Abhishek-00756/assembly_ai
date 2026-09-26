@@ -12,6 +12,7 @@ create table if not exists claimants (
 create table if not exists claim_sessions (
   id uuid primary key default gen_random_uuid(),
   claimant_id uuid not null references claimants(id) on delete cascade,
+  incident_group_id uuid,
   status text not null default 'in_progress' check (status in ('in_progress', 'paused', 'review', 'completed')),
   current_phase text not null default 'opening_safety' check (current_phase in ('opening_safety','grounding_consent','narrative','structured_gathering','evidence','review','output_generation','closing')),
   claim_data jsonb not null default '{}'::jsonb,
@@ -21,6 +22,20 @@ create table if not exists claim_sessions (
   completed_at timestamptz
 );
 create index if not exists idx_claim_sessions_resume on claim_sessions (claimant_id, status);
+create index if not exists idx_claim_sessions_incident_group on claim_sessions (incident_group_id);
+create table if not exists knowledge_graph_edges (
+  id uuid primary key default gen_random_uuid(),
+  session_id uuid not null references claim_sessions(id) on delete cascade,
+  incident_group_id uuid not null,
+  subject text not null,
+  relation text not null,
+  object_value text not null,
+  source_tool text not null,
+  created_at timestamptz not null default now(),
+  unique(session_id, subject, relation, object_value)
+);
+create index if not exists idx_knowledge_graph_group on knowledge_graph_edges (incident_group_id);
+create index if not exists idx_knowledge_graph_subject_relation on knowledge_graph_edges (subject, relation);
 create table if not exists report_artifacts (
   id uuid primary key default gen_random_uuid(),
   session_id uuid not null unique references claim_sessions(id) on delete cascade,
@@ -44,3 +59,5 @@ alter table claimants enable row level security;
 alter table claim_sessions enable row level security;
 alter table report_artifacts enable row level security;
 alter table session_event_log enable row level security;
+
+alter table knowledge_graph_edges enable row level security;
