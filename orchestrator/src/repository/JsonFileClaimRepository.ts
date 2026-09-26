@@ -1,4 +1,4 @@
-import { ClaimData, emptyClaimData, PhotoType, UNKNOWN_VALUE_SENTINEL } from "@insuranos/schema";
+import { ClaimData, emptyClaimData, PhotoType, PhotoVerification, UNKNOWN_VALUE_SENTINEL } from "@insuranos/schema";
 import { AuthMode, Claimant, ClaimSession, Phase, ReportArtifact, SessionStatus } from "../types";
 import { IClaimRepository } from "./IClaimRepository";
 import { mutateDb, readDb, randomUUID } from "../localDb";
@@ -30,7 +30,7 @@ export class JsonFileClaimRepository implements IClaimRepository{
  async getSession(id:string){return readDb().claim_sessions.find(s=>s.id===id)??null}
  async writeFieldGroup<K extends keyof ClaimData>(id:string,group:K,value:ClaimData[K]){return mutateDb(db=>{const s=this.must(db,id);s.claim_data={...s.claim_data,[group]:value};s.last_active_at=new Date().toISOString();return s})}
  async markFieldUnknown(id:string,path:string){return mutateDb(db=>{const s=this.must(db,id);const c=structuredClone(s.claim_data);setAtPath(c as any,path,UNKNOWN_VALUE_SENTINEL);s.claim_data=c;s.last_active_at=new Date().toISOString();return s})}
- async appendPhoto(id:string,type:PhotoType,storage_path:string){return mutateDb(db=>{const s=this.must(db,id);s.claim_data.evidence.photos.push({photo_type:type,storage_path,uploaded_at:new Date().toISOString()});s.last_active_at=new Date().toISOString();return s})}
+ async appendPhoto(id:string,type:PhotoType,storage_path:string,verification?:PhotoVerification){return mutateDb(db=>{const s=this.must(db,id);s.claim_data.evidence.photos.push({photo_type:type,storage_path,uploaded_at:new Date().toISOString(),verification:{photo_verified:null,photo_verification_note:null,exif_capture_at:null,exif_latitude:null,exif_longitude:null,time_delta_seconds:null,distance_m:null,...(verification??{})}});s.last_active_at=new Date().toISOString();return s})}
  async setPhase(id:string,phase:Phase){return this.patch(id,s=>{s.current_phase=phase})}
  async setStatus(id:string,status:SessionStatus){return this.patch(id,s=>{s.status=status;if(status==="completed")s.completed_at=new Date().toISOString()})}
  async setRequiresFollowup(id:string,v:boolean){return this.patch(id,s=>{s.requires_followup=v})}
