@@ -69,7 +69,7 @@ async function syncDerivedState(sessionId:string,sourceTool:string){
 
 async function reconcileAtReview(call:ActiveCall){
   const session=await repo.getSession(call.sessionId);
-  if(!session)return;
+  if(!session||!crossInsurer.enabled)return;
   try{
     const result=await crossInsurer.reconcile(session);
     await repo.writeFieldGroup(call.sessionId,"cross_party_context",{incident_group_id:session.incident_group_id,related_session_count:result.related_session_count,grounded_narrative:result.grounded_narrative,conflicts:result.conflicts,checked_at:new Date().toISOString()});
