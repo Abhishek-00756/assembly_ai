@@ -357,6 +357,60 @@ TWILIO_DEFAULT_COUNTRY_CODE=+91
 
 Location permission is optional. The voice claim flow continues when the caller denies or the browser cannot provide GPS. The local demo uses OpenStreetMap Nominatim for reverse geocoding with an identifying User-Agent, caching, and rate limiting. Production deployments should use a geocoder appropriate for their traffic and privacy requirements.
 
+## Phase 2 features
+
+Phase 2 adds three server-side enrichment and reconciliation capabilities described in the implementation notes:
+
+### 4. External context risk engine
+
+When both device GPS and an incident timestamp are available, the orchestrator queries external context services and stores the result in the non-required `context_factors` claim field. The data stays separate from caller-reported facts.
+
+- Weather: Open-Meteo historical/current weather data.
+- Traffic incidents: TomTom Traffic Incidents API when `TOMTOM_API_KEY` is configured.
+- A simple 0–100 external context score is derived from precipitation, visibility, wind, weather code and nearby incident count.
+- This score is context enrichment only; it is not a fault, legal, coverage or liability decision.
+
+Open-Meteo documents historical weather through `/v1/archive` and current/future data through the Forecast API. citeturn386545search0turn388134search0 TomTom's Incident Details API provides incidents inside a geographic bounding box and requires an API key. citeturn610183search0
+
+### 5. Knowledge graph + consistency checking
+
+Every claim-writing action also emits graph edges. The graph is stored as an adjacency-style JSON file in local mode and in the Supabase `knowledge_graph_edges` table in cloud mode.
+
+Graph checks look for multiple values for the same fact relation. When a conflict is detected, the existing tool result includes `consistency_conflicts`, and the voice agent is instructed to ask the caller for clarification instead of selecting a value.
+
+### 6. Cross-insurer / two-sided FNOL
+
+Sessions can share an `incident_group_id`. Leave the field blank to create a new group, or enter an existing group ID for a second party.
+
+When the session reaches Review:
+
+1. In Supabase mode, the current session is mirrored to shared storage.
+2. Other sessions with the same incident group are loaded.
+3. Their graph facts are reconciled.
+4. A grounded cross-party narrative and conflicts are stored in `cross_party_context`.
+5. Conflicts are surfaced to the caller before claim confirmation.
+
+Cross-insurer reconciliation is intentionally cloud-only because the local JSON store is single-process/session storage and cannot provide shared cross-party lookup.
+
+### Phase 2 environment variables
+
+External traffic enrichment is optional for local testing:
+
+```env
+TOMTOM_API_KEY=
+TOMTOM_TRAFFIC_BBOX_DEGREES=0.02
+```
+
+Cloud cross-party mode requires:
+
+```env
+REPOSITORY_MODE=supabase
+SUPABASE_URL=...
+SUPABASE_SERVICE_ROLE_KEY=...
+```
+
+Run `db/schema.sql` against the Supabase project before using cloud cross-party reconciliation.
+
 ## Optional cloud mode
 
 Set:
