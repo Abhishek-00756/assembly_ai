@@ -327,6 +327,36 @@ npm run build -w @insuranos/orchestrator
 npm run smoke -w @insuranos/orchestrator
 ```
 
+## Phase 1 features
+
+Phase 1 adds three server-owned capabilities while preserving the rule that the LLM is not the source of truth:
+
+- **Auto-GPS + reverse geocoding:** the call page requests device location before microphone use. Latitude/longitude is sent to the orchestrator, reverse-geocoded, and saved as `incident_location`. The resolved location also satisfies the existing incident-location requirement, so the agent does not need to ask for it again.
+- **Post-call summary + optional SMS:** the generated plain-text summary is always shown in the call UI even when email delivery is unavailable. Optional SMS delivery uses Twilio and the policyholder contact phone.
+- **Photo metadata integrity:** before an uploaded evidence image is stored, the orchestrator checks EXIF capture time and GPS metadata when available. A mismatch is saved with the photo and surfaced in completeness/report output; the upload is not blocked.
+
+### Phase 1 environment variables
+
+Add these to `orchestrator/.env` when the corresponding feature is enabled:
+
+```env
+# Reverse geocoding
+NOMINATIM_URL=https://nominatim.openstreetmap.org/reverse
+NOMINATIM_USER_AGENT=Insuranos/1.0 (local demo)
+
+# Photo integrity thresholds
+PHOTO_EXIF_MAX_DELTA_HOURS=24
+PHOTO_GPS_MAX_DISTANCE_M=1000
+
+# Optional SMS
+TWILIO_ACCOUNT_SID=
+TWILIO_AUTH_TOKEN=
+TWILIO_FROM_NUMBER=
+TWILIO_DEFAULT_COUNTRY_CODE=+91
+```
+
+Location permission is optional. The voice claim flow continues when the caller denies or the browser cannot provide GPS. The local demo uses OpenStreetMap Nominatim for reverse geocoding with an identifying User-Agent, caching, and rate limiting. Production deployments should use a geocoder appropriate for their traffic and privacy requirements.
+
 ## Optional cloud mode
 
 Set:
