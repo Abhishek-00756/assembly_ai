@@ -15,7 +15,7 @@ async function fetchWeather(latitude:number,longitude:number,target:Date){
 async function fetchTraffic(latitude:number,longitude:number){
  const key=process.env.TOMTOM_API_KEY;if(!key)return{incident_count:null,density:"unavailable" as const,provider:null};
  const span=Number(process.env.TOMTOM_TRAFFIC_BBOX_DEGREES??0.02),minLat=latitude-span/2,maxLat=latitude+span/2,minLon=longitude-span/2,maxLon=longitude+span/2;
- const url=new URL("https://api.tomtom.com/traffic/services/5/incidentDetails");url.searchParams.set("key",key);url.searchParams.set("bbox",`\${minLon},\${minLat},\${maxLon},\${maxLat}`);url.searchParams.set("fields","{incidents{type,geometry{type,coordinates},properties{iconCategory,numberOfReports,lastReportTime}}}");url.searchParams.set("language","en-GB");url.searchParams.set("timeValidityFilter","present");
+ const url=new URL("https://api.tomtom.com/traffic/services/5/incidentDetails");url.searchParams.set("key",key);url.searchParams.set("bbox",String(minLon)+","+String(minLat)+","+String(maxLon)+","+String(maxLat));url.searchParams.set("fields","{incidents{type,geometry{type,coordinates},properties{iconCategory,numberOfReports,lastReportTime}}}");url.searchParams.set("language","en-GB");url.searchParams.set("timeValidityFilter","present");
  const r=await fetch(url,{signal:AbortSignal.timeout(8000)});if(!r.ok)throw new Error("traffic_http_"+r.status);const j=await r.json() as {incidents?:unknown[]};const count=Array.isArray(j.incidents)?j.incidents.length:0;return{incident_count:count,density:count===0?"low" as const:count<=2?"moderate" as const:"high" as const,provider:"TomTom Traffic Incidents API"}
 }
 function score(weather:NonNullable<ContextFactors>["weather"],traffic:NonNullable<ContextFactors>["traffic"]){
