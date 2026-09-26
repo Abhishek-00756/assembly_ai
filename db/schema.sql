@@ -37,7 +37,7 @@ create table if not exists knowledge_graph_edges (
   object_value text not null,
   source_tool text not null,
   created_at timestamptz not null default now(),
-  unique(session_id, subject, relation, object_value)
+  unique(session_id, subject, relation)
 );
 create index if not exists idx_knowledge_graph_group on knowledge_graph_edges (incident_group_id);
 create index if not exists idx_knowledge_graph_subject_relation on knowledge_graph_edges (subject, relation);
