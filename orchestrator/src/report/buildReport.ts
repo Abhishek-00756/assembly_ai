@@ -1,4 +1,5 @@
 import { ClaimData, CompletenessResult, UNKNOWN_VALUE_SENTINEL, FIELD_LABELS } from "@insuranos/schema";
+import { describeContext } from "../riskEngine";
 export interface ReportJson{generated_at:string;narrative:string;groups:{safety:Record<string,string>;incident:Record<string,string>;other_parties:Record<string,string>[];user_vehicle:Record<string,string>;evidence:Record<string,string>;policy_info:Record<string,string>};context_factors:Record<string,string>|null;cross_party_context:Record<string,string>|null;flagged_gaps:string[];next_steps:string[]}
 const NOT_PROVIDED="Not provided";
 function render(v:unknown){if(v===UNKNOWN_VALUE_SENTINEL||v===null||v===undefined||v==="")return NOT_PROVIDED;if(typeof v==="boolean")return v?"Yes":"No";return String(v)}
@@ -25,6 +26,7 @@ export function buildReport(claim:ClaimData,completeness:CompletenessResult){
   flagged_gaps:[...completeness.flaggedGaps.map(f=>FIELD_LABELS[f]??f),...completeness.integrityFlags],
   next_steps:NEXT_STEPS
  };
- const summary_text=[ "Incident summary: "+report_json.narrative,"",...Object.entries(report_json.groups).flatMap(([group,val])=>group==="other_parties"?[]:[group.replace("_"," ")+": "+Object.entries(val as Record<string,string>).map(([k,v])=>k+": "+v).join("; ")]),report_json.flagged_gaps.length?"Gaps noted: "+report_json.flagged_gaps.join(", "):"No flagged gaps.","Next steps: "+NEXT_STEPS.join(" ")].join("\\n");
+ const riskSummary=describeContext(claim.context_factors);
+ const summary_text=[ "Incident summary: "+report_json.narrative,"",...Object.entries(report_json.groups).flatMap(([group,val])=>group==="other_parties"?[]:[group.replace("_"," ")+": "+Object.entries(val as Record<string,string>).map(([k,v])=>k+": "+v).join("; ")]),riskSummary?["","External context: "+riskSummary]:[],report_json.flagged_gaps.length?"Gaps noted: "+report_json.flagged_gaps.join(", "):"No flagged gaps.","Next steps: "+NEXT_STEPS.join(" ")].join("\\n");
  return{report_json,summary_text};
 }

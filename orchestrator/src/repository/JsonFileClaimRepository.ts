@@ -15,6 +15,7 @@ export class JsonFileClaimRepository implements IClaimRepository{
     const s:ClaimSession={
       id:randomUUID(),
       claimant_id,
+      incident_code:newIncidentCode(db),
       incident_group_id:incident_group_id??randomUUID(),
       status:"in_progress",
       current_phase:"opening_safety",
@@ -30,13 +31,29 @@ export class JsonFileClaimRepository implements IClaimRepository{
  }
  async findActiveSession(id:string){return readDb().claim_sessions.filter(s=>s.claimant_id===id&&["in_progress","paused","review"].includes(s.status)).sort((a,b)=>String(b.last_active_at).localeCompare(String(a.last_active_at)))[0]??null}
  async getSession(id:string){return readDb().claim_sessions.find(s=>s.id===id)??null}
+ async findSessionByIncidentCode(code:string){
+  const wanted=normalizeIncidentCode(code);
+  if(!wanted)return null;
+  const db=readDb();
+  const found=db.claim_sessions.find(s=>normalizeIncidentCode(s.incident_code)===wanted);
+  if(!found)return null;
+  return found.incident_code?found:this.ensureIncidentCode(found.id)??found;
+ }
+ // Sessions stored before incident codes existed carry none, so they can never be matched
+ // by a code search. Assign one lazily the first time such a session is read.
+ async ensureIncidentCode(id:string){
+  const existing=await this.getSession(id);
+  if(!existing)return null;
+  if(existing.incident_code)return existing;
+  return mutateDb(db=>{const s=this.must(db,id);if(!s.incident_code){s.incident_code=newIncidentCode(db);s.last_active_at=new Date().toISOString()}return s});
+ }
  async writeFieldGroup<K extends keyof ClaimData>(id:string,group:K,value:ClaimData[K]){return mutateDb(db=>{const s=this.must(db,id);s.claim_data={...s.claim_data,[group]:value};s.last_active_at=new Date().toISOString();return s})}
  async markFieldUnknown(id:string,path:string){return mutateDb(db=>{const s=this.must(db,id);const c=structuredClone(s.claim_data);setAtPath(c as any,path,UNKNOWN_VALUE_SENTINEL);s.claim_data=c;s.last_active_at=new Date().toISOString();return s})}
  async appendPhoto(id:string,type:PhotoType,storage_path:string,verification?:PhotoVerification){return mutateDb(db=>{const s=this.must(db,id);s.claim_data.evidence.photos.push({photo_type:type,storage_path,uploaded_at:new Date().toISOString(),verification:{photo_verified:null,photo_verification_note:null,exif_capture_at:null,exif_latitude:null,exif_longitude:null,time_delta_seconds:null,distance_m:null,...(verification??{})}});s.last_active_at=new Date().toISOString();return s})}
  async setPhase(id:string,phase:Phase){return this.patch(id,s=>{s.current_phase=phase})}
  async setStatus(id:string,status:SessionStatus){return this.patch(id,s=>{s.status=status;if(status==="completed")s.completed_at=new Date().toISOString()})}
  async setRequiresFollowup(id:string,v:boolean){return this.patch(id,s=>{s.requires_followup=v})}
- async createReportArtifact(id:string,data:Partial<ReportArtifact>){return mutateDb(db=>{const r:ReportArtifact={id:randomUUID(),session_id:id,report_json:null,summary_text:null,pdf_url:null,emailed_to:null,emailed_at:null,email_status:null,...data};db.report_artifacts=db.report_artifacts.filter(x=>x.session_id!==id);db.report_artifacts.push(r);return r})}
+ async createReportArtifact(id:string,data:Partial<ReportArtifact>){return mutateDb(db=>{const r:ReportArtifact={id:randomUUID(),session_id:id,report_json:null,summary_text:null,pdf_url:null,pdf_download_url:null,pdf_status:"none",pdf_error:null,emailed_to:null,emailed_at:null,email_status:null,...data};db.report_artifacts=db.report_artifacts.filter(x=>x.session_id!==id);db.report_artifacts.push(r);return r})}
  async updateReportArtifact(id:string,patch:Partial<ReportArtifact>){return mutateDb(db=>{const r=db.report_artifacts.find(x=>x.session_id===id);if(!r)throw new Error(`No ReportArtifact for session ${id}`);Object.assign(r,patch);return r})}
  async getReportArtifact(id:string){return readDb().report_artifacts.find(r=>r.session_id===id)??null}
  async logEvent(id:string,event_type:string,payload:Record<string,unknown>){mutateDb(db=>{db.session_event_log.push({id:randomUUID(),session_id:id,event_type,payload,at:new Date().toISOString()})})}
@@ -44,3 +61,21 @@ export class JsonFileClaimRepository implements IClaimRepository{
  private must(db:any,id:string){const s=db.claim_sessions.find((x:any)=>x.id===id);if(!s)throw new Error(`No ClaimSession ${id}`);return s as ClaimSession}
 }
 function setAtPath(obj:any,path:string,value:unknown){const parts=path.replace(/\[(\d+)\]/g,".$1").split(".");let cur=obj;for(let i=0;i<parts.length-1;i++){const p=parts[i];if(cur[p]==null)cur[p]=/^\d+$/.test(parts[i+1])?[]:{};cur=cur[p]}cur[parts[parts.length-1]]=value}
+
+
+const INCIDENT_CODE_ALPHABET="ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+function normalizeIncidentCode(value:string|undefined|null):string{
+ if(typeof value!=="string")return "";
+ return value.trim().toUpperCase().replace(/\s+/g,"");
+}
+function newIncidentCode(db:any):string{
+ const existing=new Set<string>(db.claim_sessions.map((s:any)=>normalizeIncidentCode(s.incident_code)).filter(Boolean));
+ for(let attempt=0;attempt<50;attempt++){
+  let body="";
+  for(let i=0;i<6;i++)body+=INCIDENT_CODE_ALPHABET[Math.floor(Math.random()*INCIDENT_CODE_ALPHABET.length)];
+  const code="INC-"+body;
+  if(!existing.has(code))return code;
+ }
+ // 50 collisions in a row means the space is effectively exhausted; fall back to a uuid-derived code.
+ return "INC-"+randomUUID().replace(/-/g,"").slice(0,6).toUpperCase();
+}
