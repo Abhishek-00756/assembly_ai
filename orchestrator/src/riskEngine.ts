@@ -2,15 +2,19 @@ import { ContextFactors } from "@insuranos/schema";
 import { ClaimSession } from "./types";
 
 type HourlyWeather={time:string[];temperature_2m?:Array<number|null>;precipitation?:Array<number|null>;visibility?:Array<number|null>;wind_speed_10m?:Array<number|null>;weather_code?:Array<number|null>};
-const weatherDescription=(code:number|null)=>{if(code==null)return null;if(code===0)return"Clear sky";if(code<=3)return"Cloudy";if(code===48||code===45)return"Fog";if(code<=67)return"Rain or drizzle";if(code<=77)return"Snow";if(code<=82)return"Rain showers";if(code<=86)return"Snow showers";if(code<=99)return"Thunderstorm";return"Unknown"};
+const weatherDescription=(code:number|null)=>{if(code==null)return null;if(code===0)return"Clear sky";if(code<=3)return"Cloudy";if(code===4)return"Overcast";if(code===48||code===45)return"Fog";if(code<=67)return"Rain or drizzle";if(code<=77)return"Snow";if(code<=82)return"Rain showers";if(code<=86)return"Snow showers";if(code<=99)return"Thunderstorm";return"Unknown"};
 function parsedDate(value:string){const d=new Date(value);return Number.isNaN(d.getTime())?null:d}
-function nearestHour(data:HourlyWeather,target:Date){let best=-1,bestDelta=Infinity;for(let i=0;i<data.time.length;i++){const t=new Date(data.time[i]).getTime();if(Number.isNaN(t))continue;const delta=Math.abs(t-target.getTime());if(delta<bestDelta){bestDelta=delta;best=i}}return best}
+// Open-Meteo returns hour stamps in UTC without a zone suffix ("2026-09-28T02:00").
+// new Date() would read those as local time and skew the lookup by the UTC offset, so pin them to UTC.
+function parseUtcHour(stamp:string){const hasZone=/(Z|[+-]\d{2}:?\d{2})$/.test(stamp);return new Date(hasZone?stamp:stamp+"Z")}
+function nearestHour(data:HourlyWeather,target:Date){let best=-1,bestDelta=Infinity;for(let i=0;i<data.time.length;i++){const t=parseUtcHour(data.time[i]).getTime();if(Number.isNaN(t))continue;const delta=Math.abs(t-target.getTime());if(delta<bestDelta){bestDelta=delta;best=i}}return best}
 async function fetchWeather(latitude:number,longitude:number,target:Date){
  const start=target.toISOString().slice(0,10),useForecast=target.getTime()>=Date.now()-2*24*3600*1000&&target.getTime()<=Date.now()+2*24*3600*1000,url=new URL(useForecast?"https://api.open-meteo.com/v1/forecast":"https://archive-api.open-meteo.com/v1/archive");
- url.searchParams.set("latitude",String(latitude));url.searchParams.set("longitude",String(longitude));url.searchParams.set("hourly","temperature_2m,precipitation,visibility,wind_speed_10m,weather_code");url.searchParams.set("timezone","UTC");url.searchParams.set("start_date",start);url.searchParams.set("end_date",start);
- if(useForecast){url.searchParams.set("past_days","2");url.searchParams.set("forecast_days","2")}
+ url.searchParams.set("latitude",String(latitude));url.searchParams.set("longitude",String(longitude));url.searchParams.set("hourly","temperature_2m,precipitation,visibility,wind_speed_10m,weather_code");url.searchParams.set("timezone","UTC");if(useForecast){url.searchParams.set("past_days","2");url.searchParams.set("forecast_days","2")}else{url.searchParams.set("start_date",start);url.searchParams.set("end_date",start)}
  const r=await fetch(url,{signal:AbortSignal.timeout(8000)});if(!r.ok)throw new Error("weather_http_"+r.status);const j=await r.json() as {hourly:HourlyWeather};const i=nearestHour(j.hourly,target);if(i<0)throw new Error("weather_hour_not_found");
- return{observed_at:j.hourly.time[i]??null,temperature_c:j.hourly.temperature_2m?.[i]??null,precipitation_mm:j.hourly.precipitation?.[i]??null,visibility_m:j.hourly.visibility?.[i]??null,wind_kmh:j.hourly.wind_speed_10m?.[i]??null,weather_code:j.hourly.weather_code?.[i]??null,description:weatherDescription(j.hourly.weather_code?.[i]??null)}
+  const weather={observed_at:j.hourly.time[i]??null,temperature_c:j.hourly.temperature_2m?.[i]??null,precipitation_mm:j.hourly.precipitation?.[i]??null,visibility_m:j.hourly.visibility?.[i]??null,wind_kmh:j.hourly.wind_speed_10m?.[i]??null,weather_code:j.hourly.weather_code?.[i]??null,description:weatherDescription(j.hourly.weather_code?.[i]??null)};
+  const coverage_note=weather.visibility_m==null?'Visibility unavailable from the historical weather archive; score excludes the visibility weighting.':null;
+  return{weather,coverage_note};
 }
 async function fetchTraffic(latitude:number,longitude:number){
  const key=process.env.TOMTOM_API_KEY;if(!key)return{incident_count:null,density:"unavailable" as const,provider:null};
@@ -31,8 +35,8 @@ export async function enrichContext(session:ClaimSession):Promise<ContextFactors
  const location=session.claim_data.incident_location,at=parsedDate(String(session.claim_data.incident.date_time??""));
  if(!location||!at)return null;
  let weather:NonNullable<ContextFactors>["weather"]=null,traffic:NonNullable<ContextFactors>["traffic"]=null;
- let ws="unavailable",ts="unavailable";const factors:string[]=[];
- try{weather=await fetchWeather(location.latitude,location.longitude,at);ws="available"}catch{factors.push("Weather context unavailable")}
+ let ws="unavailable",ts="unavailable",weatherNote:string|null=null;const factors:string[]=[];
+ try{const w=await fetchWeather(location.latitude,location.longitude,at);weather=w.weather;weatherNote=w.coverage_note;ws="available";if(weatherNote)factors.push(weatherNote)}catch{factors.push("Weather context unavailable")}
  try{traffic=await fetchTraffic(location.latitude,location.longitude);ts=traffic.provider?"available":"not_configured"}catch{factors.push("Traffic context unavailable")}
  const scored=score(weather,traffic);
  return{generated_at:new Date().toISOString(),provider_status:{weather:ws,traffic:ts},weather,traffic,context_score:(weather||traffic)?scored.score:null,factors:[...scored.factors,...factors]}

@@ -19,7 +19,7 @@ import { enrichContext } from "./riskEngine";
 import { GraphStore } from "./graphStore";
 import { CloudMirror } from "./cloudMirror";
 import { CrossInsurerService } from "./crossInsurer";
-import { ClientToOrchestratorEvent, OrchestratorToClientEvent, Phase } from "./types";
+import { ClientToOrchestratorEvent, OrchestratorToClientEvent, Phase, ClaimSession } from "./types";
 
 const PORT = Number(process.env.ORCHESTRATOR_PORT ?? 8787);
 const repo: IClaimRepository = new JsonFileClaimRepository();
@@ -52,7 +52,21 @@ function sendToClient(client: WebSocket, event: OrchestratorToClientEvent) {
   if (client.readyState === WebSocket.OPEN) client.send(JSON.stringify(event));
 }
 
-async function syncDerivedState(sessionId:string,sourceTool:string){
+function needsEnrichment(session:ClaimSession):boolean{
+  const claim=session.claim_data;
+  if(!claim.incident_location||!claim.incident.date_time||claim.incident.date_time==="__UNKNOWN__")return false;
+  const existing=claim.context_factors;
+  if(!existing)return true;
+  // observed_at is a UTC stamp without a zone suffix; date_time is caller text and may be local or zoned.
+  // Normalise both to UTC days so a local timestamp near midnight cannot force a refetch on every sync.
+  const observedRaw=existing.weather?.observed_at;
+  const observed=new Date(observedRaw&&!/(Z|[+-]\d{2}:?\d{2})$/.test(observedRaw)?observedRaw+"Z":(observedRaw??""));
+  const target=new Date(String(claim.incident.date_time));
+  if(Number.isNaN(observed.getTime())||Number.isNaN(target.getTime()))return true;
+  return observed.toISOString().slice(0,10)!==target.toISOString().slice(0,10);
+}
+
+async function syncDerivedState(sessionId:string,sourceTool:string,client?:WebSocket){
   const session=await repo.getSession(sessionId);
   if(!session)return[] as string[];
   let conflicts:string[]=[];
@@ -61,8 +75,14 @@ async function syncDerivedState(sessionId:string,sourceTool:string){
     const claimant=await repo.getClaimant(session.claimant_id);
     if(claimant&&cloudMirror.enabled)await cloudMirror.sync(claimant,session);
   }catch{await eventLog.toolCall(sessionId,"cloud_mirror_sync",false,[])}
-  if((sourceTool==="record_incident_basics"||sourceTool==="device_gps")&&session.claim_data.incident_location&&session.claim_data.incident.date_time){
-    try{const context=await enrichContext(session);if(context)await repo.writeFieldGroup(sessionId,"context_factors",context)}catch{await eventLog.toolCall(sessionId,"risk_context_enrichment",false,[])}
+  if(needsEnrichment(session)){
+    try{
+      const context=await enrichContext(session);
+      if(context){
+        await repo.writeFieldGroup(sessionId,"context_factors",context);
+        if(client)sendToClient(client,{type:"context_update",context_factors:context});
+      }
+    }catch{await eventLog.toolCall(sessionId,"risk_context_enrichment",false,[])}
   }
   return conflicts;
 }
@@ -122,7 +142,7 @@ async function handleToolCall(call: ActiveCall, callId: string, name: string, ar
   try {
     let result = await callTool(name, args, { repo, sessionId: call.sessionId });
     if(result.ok&&GRAPH_WRITE_TOOLS.has(name)){
-      const conflicts=await syncDerivedState(call.sessionId,name);
+      const conflicts=await syncDerivedState(call.sessionId,name,call.clientWs);
       if(conflicts.length)result={...result,result:{...result.result,consistency_conflicts:conflicts}};
     }
     await eventLog.toolCall(call.sessionId, name, result.ok, Object.keys(result.result));
@@ -178,7 +198,7 @@ async function handleClientMessage(call: ActiveCall, raw: WebSocket.RawData) {
       call.voice.requestReply(`The caller's ${parsedType.data} photo was just received. Acknowledge that specific photo and continue.`);
       const session = await repo.getSession(call.sessionId);
       if (session) {
-        await syncDerivedState(call.sessionId,"photo_uploaded");
+        await syncDerivedState(call.sessionId,"photo_uploaded",call.clientWs);
         const latest=await repo.getSession(call.sessionId);
         if(latest)sendToClient(call.clientWs,{type:"completeness_update",completeness:computeCompleteness(latest.claim_data)});
       }
@@ -220,6 +240,7 @@ async function startCall(clientWs: WebSocket, sessionId: string) {
   );
 
   if (resuming) call.voice.requestReply(resumeGroundingMessage(computeCompleteness(session.claim_data)));
+  if (session.claim_data.context_factors) sendToClient(clientWs, { type: "context_update", context_factors: session.claim_data.context_factors });
   await pushPhaseTools(call);
   clientWs.on("message", (raw) => void handleClientMessage(call, raw));
   clientWs.on("close", () => void onClientDisconnect(call));
