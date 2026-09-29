@@ -47,6 +47,8 @@ async function main(){
  const claimant=await repo.createClaimant({auth_mode:"demo",display_name:"Smoke",email:"smoke@test.local"});
  const session=await repo.createSession(claimant.id);
  const ctx={repo,sessionId:session.id};
+ check("demo name prefilled into policyholder_name",session.claim_data.policy_info.policyholder_name==="Smoke",session.claim_data.policy_info.policyholder_name);
+ check("demo email prefilled into policy contact_email",session.claim_data.policy_info.contact_email==="smoke@test.local",session.claim_data.policy_info.contact_email);
  check("code matches INC-XXXXXX",/^INC-[A-Z0-9]{6}$/.test(session.incident_code),session.incident_code);
  check("lookup by exact code",(await repo.findSessionByIncidentCode(session.incident_code))?.id===session.id);
  check("lookup is case-insensitive",(await repo.findSessionByIncidentCode(session.incident_code.toLowerCase()))?.id===session.id);

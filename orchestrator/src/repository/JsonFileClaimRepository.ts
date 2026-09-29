@@ -12,6 +12,7 @@ export class JsonFileClaimRepository implements IClaimRepository{
     const claimant=db.claimants.find(c=>c.id===claimant_id);
     const claimData=emptyClaimData();
     claimData.policy_info.contact_email=claimant?.email??null;
+    claimData.policy_info.policyholder_name=claimant?.display_name??null;
     const s:ClaimSession={
       id:randomUUID(),
       claimant_id,
