@@ -41,3 +41,21 @@ export async function enrichContext(session:ClaimSession):Promise<ContextFactors
  const scored=score(weather,traffic);
  return{generated_at:new Date().toISOString(),provider_status:{weather:ws,traffic:ts},weather,traffic,context_score:(weather||traffic)?scored.score:null,factors:[...scored.factors,...factors]}
 }
+
+/**
+ * Renders server-derived context as neutral, factual prose for the dashboard and
+ * report summary. Deliberately avoids words like fault, blame, cause or
+ * responsibility: this data is context enrichment, not a coverage or liability decision.
+ */
+export function describeContext(ctx:ContextFactors):string|null{
+ if(!ctx)return null;
+ const score=ctx.context_score;
+ const parts:string[]=[];
+ if(score==null)return"External conditions were looked up but no usable source data was available for the incident time.";
+ const weather=ctx.weather,traffic=ctx.traffic;
+ if(weather)parts.push("Recorded conditions at the incident time and place were "+String(weather.description??"unavailable").toLowerCase()+" (precipitation "+(weather.precipitation_mm==null?"not recorded":weather.precipitation_mm+" mm")+", visibility "+(weather.visibility_m==null?"not recorded":weather.visibility_m+" m")+", wind "+(weather.wind_kmh==null?"not recorded":weather.wind_kmh+" km/h")+")");
+ if(traffic&&traffic.incident_count!=null)parts.push("Nearby reported traffic incidents at lookup time: "+traffic.incident_count+" ("+String(traffic.density).toLowerCase()+" density; present-time data, not incident-time)");
+ if(!parts.length)return null;
+ const band=score>=60?"elevated":score>=30?"moderate":"low";
+ return"External context score "+score+"/100 ("+band+"). "+parts.join(". ")+". This is automated environmental context only and is not a determination of fault, cause, or coverage.";
+}
