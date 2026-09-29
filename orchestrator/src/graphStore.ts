@@ -5,6 +5,10 @@ import { createClient, SupabaseClient } from "@supabase/supabase-js";
 import { ClaimSession } from "./types";
 
 export interface GraphEdge{id:string;session_id:string;incident_group_id:string;subject:string;relation:string;object_value:string;source_tool:string;created_at:string}
+export interface GraphNodeRelation{relation:string;value:string;source_tool:string}
+export interface GraphNode{id:string;type:string;label:string;value:string|null;relations:GraphNodeRelation[]}
+function nodeType(subject:string){const kind=subject.split(":")[0];return kind.replace(/_/g," ")}
+function nodeLabel(subject:string){const [kind,...rest]=subject.split(":");if(kind==="incident-group")return "Incident group";if(kind==="other_party")return "Other party";if(kind==="user_vehicle")return "Your vehicle";if(kind==="incident")return "Incident";return rest.length?kind.replace(/_/g," "):"Node"}
 interface GraphFile{edges:GraphEdge[]}
 function dataDir(){return path.resolve(process.env.INSURANOS_LOCAL_DATA_DIR??".localdata")}
 function graphFile(){return path.join(dataDir(),"knowledge-graph.json")}
@@ -24,6 +28,7 @@ function edgesFromSession(s:ClaimSession,sourceTool:string):GraphEdge[]{
  add("policy:"+id,"policyholder_name",c.policy_info.policyholder_name);add("policy:"+id,"policy_number",c.policy_info.policy_number);add("policy:"+id,"contact_phone",c.policy_info.contact_phone);add("policy:"+id,"contact_email",c.policy_info.contact_email);
  const p=c.other_parties[0];if(p){add("other_party:"+id,"name",p.name);add("other_party:"+id,"phone",p.phone);add("other_party:"+id,"insurer",p.insurer_name);add("other_party:"+id,"policy_number",p.policy_number);add("other_party:"+id,"vehicle",[value(p.vehicle.make),value(p.vehicle.model),value(p.vehicle.plate)].filter(Boolean).join(" / "))}
  c.evidence.photos.forEach((p,i)=>add("photo:"+id+":"+i,"photo_type",p.photo_type));
+ const ctx=s.claim_data.context_factors;add("incident:"+id,"context_score",ctx?.context_score==null?null:String(ctx.context_score));add("incident:"+id,"weather_conditions",ctx?.weather?.description);add("incident:"+id,"weather_observed_at",ctx?.weather?.observed_at);add("incident:"+id,"traffic_density",ctx?.traffic?.density==null?null:ctx.traffic.density);add("incident:"+id,"traffic_incident_count",ctx?.traffic?.incident_count==null?null:String(ctx.traffic.incident_count));(ctx?.factors??[]).forEach((f,i)=>add("incident:"+id,"risk_factor_"+i,f));
  return out
 }
 export class GraphStore{
@@ -37,6 +42,21 @@ export class GraphStore{
    const db=await localRead();db.edges=db.edges.filter(x=>x.session_id!==session.id);db.edges.push(...incoming);await localWrite(db)
   }
   return this.findConflicts(session.incident_group_id)
+ }
+ async edgesForSession(sessionId:string):Promise<GraphEdge[]>{
+  const supabase=supabaseClient();
+  if(supabase){const {data,error}=await supabase.from("knowledge_graph_edges").select("*").eq("session_id",sessionId);if(error)throw error;return (data??[]) as GraphEdge[]}
+  return (await localRead()).edges.filter(e=>e.session_id===sessionId)
+ }
+ // Derives display nodes from stored edges so the web layer does not re-derive node types.
+ async nodesForSession(sessionId:string):Promise<GraphNode[]>{
+  const edges=await this.edgesForSession(sessionId),nodes=new Map<string,GraphNode>();
+  for(const e of edges){
+   if(!nodes.has(e.subject))nodes.set(e.subject,{id:e.subject,type:nodeType(e.subject),label:nodeLabel(e.subject),value:null,relations:[]});
+   const from=nodes.get(e.subject)!;
+   from.relations.push({relation:e.relation,value:e.object_value,source_tool:e.source_tool});
+  }
+  return Array.from(nodes.values())
  }
  async edgesForGroup(groupId:string):Promise<GraphEdge[]>{
   const supabase=supabaseClient();
