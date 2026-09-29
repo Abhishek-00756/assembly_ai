@@ -19,6 +19,7 @@ import { enrichContext, describeContext } from "./riskEngine";
 import { GraphStore } from "./graphStore";
 import { CloudMirror } from "./cloudMirror";
 import { CrossInsurerService } from "./crossInsurer";
+import { sendReportEmail } from "./report/sendEmail";
 import { ClientToOrchestratorEvent, OrchestratorToClientEvent, Phase, ClaimSession } from "./types";
 
 const PORT = Number(process.env.ORCHESTRATOR_PORT ?? 8787);
@@ -356,6 +357,64 @@ async function httpHandler(req: http.IncomingMessage, res: http.ServerResponse) 
       const session = await repo.getSession(sessionMatch[1]);
       if (!session) return json(res, 404, { error: "session_not_found" });
       return json(res, 200, { session, completeness: computeCompleteness(session.claim_data), report: await repo.getReportArtifact(session.id) });
+    }
+
+    const reportMatch = url.pathname.match(/^\/api\/sessions\/([^/]+)\/report$/);
+    if (req.method === "GET" && reportMatch) {
+      const sessionId = reportMatch[1];
+      const session = await repo.getSession(sessionId);
+      if (!session) return json(res, 404, { error: "session_not_found" });
+
+      const artifact = await repo.getReportArtifact(sessionId);
+      if (!artifact) return json(res, 404, { error: "report_not_generated", session_id: sessionId });
+
+      return json(res, 200, {
+        report: artifact,
+        report_ready: artifact.pdf_status === "ready",
+      });
+    }
+
+    const reportResendMatch = url.pathname.match(/^\/api\/sessions\/([^/]+)\/report\/resend$/);
+    if (req.method === "POST" && reportResendMatch) {
+      const sessionId = reportResendMatch[1];
+      const session = await repo.getSession(sessionId);
+      if (!session) return json(res, 404, { error: "session_not_found" });
+
+      const artifact = await repo.getReportArtifact(sessionId);
+      if (!artifact) return json(res, 404, { error: "report_not_generated", session_id: sessionId });
+      if (artifact.pdf_status === "failed") {
+        return json(res, 409, { error: "report_pdf_unavailable", detail: artifact.pdf_error ?? "PDF generation failed" });
+      }
+
+      const claimant = await repo.getClaimant(session.claimant_id);
+      const email = session.claim_data.policy_info.contact_email ?? claimant?.email;
+      if (typeof email !== "string" || !email.trim()) {
+        return json(res, 400, { error: "no_contact_email_on_file" });
+      }
+
+      try {
+        await sendReportEmail({
+          to: email.trim(),
+          pdfUrl: artifact.pdf_url,
+          summaryText: artifact.summary_text ?? "",
+        });
+        const updated = await repo.updateReportArtifact(sessionId, {
+          emailed_to: email.trim(),
+          emailed_at: new Date().toISOString(),
+          email_status: "sent",
+        });
+        await eventLog.toolCall(sessionId, "send_report_email_resend", true, ["emailed_to", "emailed_at", "email_status"]);
+        return json(res, 200, {
+          sent: true,
+          emailed_to: updated.emailed_to,
+          emailed_at: updated.emailed_at,
+          email_status: updated.email_status,
+        });
+      } catch {
+        await repo.updateReportArtifact(sessionId, { email_status: "failed" });
+        await eventLog.toolCall(sessionId, "send_report_email_resend", false, ["email_status"]);
+        return json(res, 502, { error: "email_delivery_failed" });
+      }
     }
 
     const dashboardMatch = url.pathname.match(/^\/api\/sessions\/([^/]+)\/dashboard$/);
