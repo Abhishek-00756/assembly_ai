@@ -11,7 +11,7 @@
   },
   "dependencies": {
     "@insuranos/schema": "file:../packages/schema",
-    "@react-pdf/renderer": "^4.1.6",
+    "@react-pdf/renderer": "4.3.0",
     "@supabase/supabase-js": "^2.45.4",
     "dotenv": "^16.4.5",
     "react": "^18.3.1",
@@ -26,5 +26,6 @@
     "@types/ws": "^8.5.12",
     "tsx": "^4.19.0",
     "typescript": "^5.5.4"
-  }
+  },
+  "type": "module"
 }

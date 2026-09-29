@@ -12,6 +12,7 @@ create table if not exists claimants (
 create table if not exists claim_sessions (
   id uuid primary key default gen_random_uuid(),
   claimant_id uuid not null references claimants(id) on delete cascade,
+  incident_code text,
   incident_group_id text,
   status text not null default 'in_progress' check (status in ('in_progress', 'paused', 'review', 'completed')),
   current_phase text not null default 'opening_safety' check (current_phase in ('opening_safety','grounding_consent','narrative','structured_gathering','evidence','review','output_generation','closing')),
@@ -28,6 +29,19 @@ do $ begin
     alter table claim_sessions alter column incident_group_id type text using incident_group_id::text;
   end if;
 end $;
+
+-- Human-readable incident code (INC-XXXXXX). Added after the initial schema shipped,
+-- so existing rows are backfilled and the column is only tightened to unique+not-null
+-- once every row carries a code.
+alter table claim_sessions add column if not exists incident_code text;
+do $ begin
+  if exists (select 1 from claim_sessions where incident_code is null or incident_code = '') then
+    update claim_sessions
+       set incident_code = 'INC-' || upper(substr(replace(gen_random_uuid()::text, '-', ''), 1, 6))
+     where incident_code is null or incident_code = '';
+  end if;
+end $;
+create unique index if not exists idx_claim_sessions_incident_code on claim_sessions (incident_code);
 create table if not exists knowledge_graph_edges (
   id uuid primary key default gen_random_uuid(),
   session_id uuid not null references claim_sessions(id) on delete cascade,
@@ -50,10 +64,21 @@ create table if not exists report_artifacts (
   report_json jsonb,
   summary_text text,
   pdf_url text,
+  pdf_download_url text,
+  pdf_status text check (pdf_status in ('pending','ready','failed','none')),
+  pdf_error text,
   emailed_to text,
   emailed_at timestamptz,
   email_status text check (email_status in ('pending','sent','failed'))
 );
+alter table report_artifacts add column if not exists pdf_download_url text;
+alter table report_artifacts add column if not exists pdf_status text;
+alter table report_artifacts add column if not exists pdf_error text;
+do $ begin
+  if not exists (select 1 from pg_constraint where conname = 'report_artifacts_pdf_status_check') then
+    alter table report_artifacts add constraint report_artifacts_pdf_status_check check (pdf_status in ('pending','ready','failed','none'));
+  end if;
+end $;
 create table if not exists session_event_log (
   id uuid primary key default gen_random_uuid(),
   session_id uuid not null references claim_sessions(id) on delete cascade,
