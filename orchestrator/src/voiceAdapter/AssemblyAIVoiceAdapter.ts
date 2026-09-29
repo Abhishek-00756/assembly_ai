@@ -50,6 +50,18 @@ export class AssemblyAIVoiceAdapter implements IVoiceSessionAdapter{
   }
 
   sendAudioChunk(audio:string){this.send({type:"input.audio",audio});}
+  /**
+   * Type-to-talk fallback: inject the caller's typed reply as a user turn, then
+   * explicitly request a reply. Injecting the message alone does not start a turn.
+   * Verified against wss://agents.assemblyai.com/v1/ws: `content` must be a plain
+   * string (a content array is rejected as an invalid message format).
+   */
+  sendUserText(text:string){
+   const trimmed=text.trim();
+   if(!trimmed)return;
+   this.send({type:"conversation.message",role:"user",content:trimmed});
+   this.send({type:"reply.create"});
+  }
   updateSystemPrompt(systemPrompt:string){this.send({type:"session.update",session:{system_prompt:systemPrompt}});}
   updateTools(tools:unknown[]){this.send({type:"session.update",session:{tools}});}
   sendToolResult(callId:string,result:unknown,isError=false){this.pendingToolResults.push({callId,result,isError});}
