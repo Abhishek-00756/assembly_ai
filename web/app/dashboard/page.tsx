@@ -43,6 +43,23 @@ function DashboardContent(){
   if(!data)return null;
 
   const d=data,inc=d.incident,rep=d.report,risk=d.risk,comp=d.completeness;
+  const [resending,setResending]=useState(false);
+  const [resendError,setResendError]=useState("");
+  async function resendReport(){
+    if(!sessionId||resending)return;
+    setResending(true);
+    setResendError("");
+    try{
+      const response=await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/report/resend`,{method:"POST"});
+      const body=await response.json().catch(()=>null);
+      if(!response.ok)throw new Error(body?.error==="email_delivery_failed"?"Email delivery failed. Check the Resend configuration.":body?.error==="no_contact_email_on_file"?"No contact email is available for this claim.":body?.error??"Could not resend report");
+      setData(prev=>prev?{...prev,report:{...prev.report,email_status:body.email_status??"sent",emailed_to:body.emailed_to??prev.report.emailed_to,emailed_at:body.emailed_at??prev.report.emailed_at}}:prev);
+    }catch(e){
+      setResendError(e instanceof Error?e.message:String(e));
+    }finally{
+      setResending(false);
+    }
+  }
   const fieldsResolved=comp.fields.filter(f=>f.status!=="missing").length;
   const sorted=[...d.graph.nodes].sort((a,b)=>{const ai=NODE_ORDER.indexOf(a.type),bi=NODE_ORDER.indexOf(b.type);return (ai<0?99:ai)-(bi<0?99:bi)});
   const pdfHref=rep.download_url??rep.pdf_url;
@@ -86,7 +103,11 @@ function DashboardContent(){
         <section className="rounded-3xl border bg-white p-5 shadow-sm">
           <h2 className="font-semibold">Claim report</h2>
           {!rep.generated&&<p className="mt-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800">{rep.eligible?"No report has been generated for this claim yet.":`No report has been generated for this claim yet. ${rep.blocked_reason??"Required fields are still missing."}`}</p>}
-          {rep.generated&&rep.pdf_status==="ready"&&pdfHref&&<a href={pdfHref} target="_blank" rel="noreferrer" className="mt-4 inline-block rounded-xl bg-slate-900 px-4 py-3 text-center text-sm font-semibold text-white">Open PDF report</a>}
+          {rep.generated&&rep.pdf_status==="ready"&&pdfHref&&<div className="mt-4 flex flex-wrap gap-2">
+            <a href={pdfHref} target="_blank" rel="noreferrer" className="rounded-xl bg-slate-900 px-4 py-3 text-center text-sm font-semibold text-white">Open PDF report</a>
+            <button onClick={resendReport} disabled={resending} className="rounded-xl border px-4 py-3 text-center text-sm font-semibold text-slate-700 disabled:cursor-not-allowed disabled:opacity-50">{resending?"Sending…":"Resend report email"}</button>
+          </div>}
+          {resendError&&<p className="mt-3 rounded-xl border border-red-200 bg-red-50 p-3 text-xs text-red-700">{resendError}</p>}
           {rep.pdf_status==="failed"&&<div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800"><strong>PDF generation failed</strong><div className="mt-1">{rep.pdf_error??"Unknown error"}</div></div>}
           {rep.generated&&rep.summary_text&&<p className="mt-4 whitespace-pre-wrap text-sm text-slate-600">{rep.summary_text}</p>}
           {rep.email_status&&<p className="mt-3 text-xs text-slate-500">Email delivery: {rep.email_status}{rep.emailed_to?` → ${rep.emailed_to}`:""}</p>}
