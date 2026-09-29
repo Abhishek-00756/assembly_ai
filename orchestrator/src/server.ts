@@ -15,7 +15,7 @@ import { buildSystemPrompt, resumeGroundingMessage } from "./promptBuilder";
 import { CompletenessLoopGuard } from "./completenessLoopGuard";
 import { EventLog } from "./eventLog";
 import { buildIncidentLocation, reverseGeocode, verifyPhoto } from "./phase1";
-import { enrichContext } from "./riskEngine";
+import { enrichContext, describeContext } from "./riskEngine";
 import { GraphStore } from "./graphStore";
 import { CloudMirror } from "./cloudMirror";
 import { CrossInsurerService } from "./crossInsurer";
@@ -184,6 +184,15 @@ async function handleClientMessage(call: ActiveCall, raw: WebSocket.RawData) {
     case "audio_chunk":
       call.voice.sendAudioChunk(event.audio);
       break;
+    case "text_input": {
+      // Type-to-talk fallback. Echo the caller's text into the transcript so the
+      // panel reflects what was sent, then hand it to the agent as a user turn.
+      const text = typeof event.text === "string" ? event.text.trim() : "";
+      if (!text) break;
+      sendToClient(call.clientWs, { type: "transcript_final", speaker: "user", text });
+      call.voice.sendUserText(text);
+      break;
+    }
     case "client_event":
       if (event.event === "end_call") {
         call.voice.end();
@@ -268,6 +277,62 @@ function json(res: http.ServerResponse, status: number, body: unknown) {
   res.end(JSON.stringify(body));
 }
 
+async function buildDashboard(sessionId:string){
+  const session=await repo.ensureIncidentCode(sessionId)??await repo.getSession(sessionId);
+  if(!session)return null;
+  const claimant=await repo.getClaimant(session.claimant_id);
+  const completeness=computeCompleteness(session.claim_data);
+  const [edges,nodes,conflicts,artifact]=await Promise.all([
+    graphStore.edgesForSession(session.id),
+    graphStore.nodesForSession(session.id),
+    graphStore.findConflicts(session.incident_group_id).catch(()=>[] as string[]),
+    repo.getReportArtifact(session.id),
+  ]);
+  const groupEdges=await graphStore.edgesForGroup(session.incident_group_id).catch(()=>[] as typeof edges);
+  const peerIds=Array.from(new Set(groupEdges.map(e=>e.session_id))).filter(id=>id!==session.id);
+  const peers=(await Promise.all(peerIds.map(id=>repo.getSession(id)))).filter(Boolean) as ClaimSession[];
+  const ctx=session.claim_data.context_factors;
+  const cross=session.claim_data.cross_party_context;
+  return{
+    incident:{id:session.id,incident_code:session.incident_code,incident_group_id:session.incident_group_id,status:session.status,current_phase:session.current_phase,started_at:session.started_at,completed_at:session.completed_at,requires_followup:session.requires_followup},
+    claimant:claimant?{display_name:claimant.display_name,email:claimant.email,phone_number:claimant.phone_number}:null,
+    completeness,
+    graph:{
+      nodes,
+      edges:edges.map(e=>({from:e.subject,relation:e.relation,to:e.object_value,source_tool:e.source_tool})),
+      conflicts,
+      peer_sessions:peers.map(p=>({id:p.id,incident_code:p.incident_code,status:p.status}))
+    },
+    report:{
+      generated:Boolean(artifact),
+      eligible:completeness.isReportEligible,
+      blocked_reason:completeness.isReportEligible?null:completeness.missingRequired.length+" required field(s) still missing",
+      pdf_status:artifact?.pdf_status??"none",
+      pdf_error:artifact?.pdf_error??null,
+      pdf_url:artifact?.pdf_url??null,
+      download_url:artifact?.pdf_download_url??null,
+      summary_text:artifact?.summary_text??null,
+      report_json:artifact?.report_json??null,
+      email_status:artifact?.email_status??null,
+      emailed_to:artifact?.emailed_to??null,
+      emailed_at:artifact?.emailed_at??null
+    },
+    risk:{
+      available:Boolean(ctx),
+      context_score:ctx?.context_score??null,
+      provider_status:ctx?.provider_status??null,
+      weather:ctx?.weather??null,
+      traffic:ctx?.traffic??null,
+      factors:ctx?.factors??[],
+      interpretation:describeContext(ctx),
+      is_liability_decision:false
+    },
+    cross_party:cross
+      ?{available:true,related_session_count:cross.related_session_count,grounded_narrative:cross.grounded_narrative,conflicts:cross.conflicts,note:null as string|null}
+      :{available:false,related_session_count:0,grounded_narrative:"",conflicts:[] as string[],note:"Cross-party reconciliation requires Supabase cloud mode; not available for this local session."}
+  };
+}
+
 async function httpHandler(req: http.IncomingMessage, res: http.ServerResponse) {
   const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
   if (req.method === "OPTIONS") return json(res, 204, null);
@@ -291,6 +356,21 @@ async function httpHandler(req: http.IncomingMessage, res: http.ServerResponse) 
       const session = await repo.getSession(sessionMatch[1]);
       if (!session) return json(res, 404, { error: "session_not_found" });
       return json(res, 200, { session, completeness: computeCompleteness(session.claim_data), report: await repo.getReportArtifact(session.id) });
+    }
+
+    const dashboardMatch = url.pathname.match(/^\/api\/sessions\/([^/]+)\/dashboard$/);
+    if (req.method === "GET" && dashboardMatch) {
+      const data = await buildDashboard(dashboardMatch[1]);
+      if (!data) return json(res, 404, { error: "session_not_found" });
+      return json(res, 200, data);
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/incidents") {
+      const code = url.searchParams.get("code") ?? "";
+      if (!code.trim()) return json(res, 400, { error: "code query param required" });
+      const session = await repo.findSessionByIncidentCode(code);
+      if (!session) return json(res, 404, { error: "incident_not_found", code: code.trim() });
+      return json(res, 200, { incident: { id: session.id, incident_code: session.incident_code, incident_group_id: session.incident_group_id, status: session.status, current_phase: session.current_phase } });
     }
 
     const locationMatch = url.pathname.match(/^\/api\/sessions\/([^/]+)\/location$/);
