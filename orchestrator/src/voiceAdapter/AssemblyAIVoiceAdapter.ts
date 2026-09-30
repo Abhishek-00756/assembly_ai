@@ -12,6 +12,17 @@ export class AssemblyAIVoiceAdapter implements IVoiceSessionAdapter{
   private readyPromise:Promise<void>|null=null;
   private resolveReady:(()=>void)|null=null;
   private rejectReady:((err:Error)=>void)|null=null;
+  private watchdog:NodeJS.Timeout|null=null;
+  private awaitingUser=true;
+
+  /** Nudges the agent if it has been silent for a while, so a dropped turn cannot strand the caller. */
+  private armWatchdog(){
+   this.clearWatchdog();
+   this.watchdog=setTimeout(()=>{
+    if(this.awaitingUser)this.send({type:"reply.create",instructions:"The caller has not responded. Ask your next question again, briefly and in plain language."});
+   },Number(process.env.SILENCE_NUDGE_MS??22000));
+  }
+  private clearWatchdog(){if(this.watchdog){clearTimeout(this.watchdog);this.watchdog=null}}
 
   constructor(private apiKey:string=process.env.ASSEMBLYAI_API_KEY!){
     if(!this.apiKey)throw new Error("ASSEMBLYAI_API_KEY missing — configure it as a server-side secret");
@@ -31,21 +42,20 @@ export class AssemblyAIVoiceAdapter implements IVoiceSessionAdapter{
         case"session.ready":this.resolveReady?.();this.resolveReady=null;this.rejectReady=null;break;
         case"reply.audio":handlers.onAudioOut(e.data);break;
         case"transcript.user.delta":handlers.onUserTranscriptPartial(e.text);break;
-        case"transcript.user":handlers.onUserTranscriptFinal(e.text);break;
+        case"transcript.user":this.awaitingUser=false;this.clearWatchdog();handlers.onUserTranscriptFinal(e.text);break;
         case"transcript.agent":handlers.onAgentTranscriptFinal(e.text);break;
         case"tool.call":handlers.onToolCall(e.call_id,e.name,e.arguments??{});break;
         case"reply.done":
-          if(e.status!=="interrupted"){
-            const pending=this.pendingToolResults.splice(0);
-            for(const item of pending)this.send({type:"tool.result",call_id:item.callId,result:typeof item.result==="string"?item.result:JSON.stringify(item.result),is_error:item.isError});
-          }else{this.pendingToolResults=[];}
+          // The agent has finished its turn and is now waiting on the caller.
+          // Arm a watchdog so a dropped turn cannot leave the caller in silence.
+          if(this.awaitingUser)this.armWatchdog();
           break;
         case"session.error":{const message=`${e.code??"session.error"}: ${e.message??"Unknown AssemblyAI error"}`;handlers.onError(message);this.rejectReady?.(new Error(message));this.resolveReady=null;this.rejectReady=null;break;}
-        case"session.ended":handlers.onEnded();break;
+        case"session.ended":this.clearWatchdog();handlers.onEnded();break;
       }
     });
-    ws.on("error",err=>{handlers.onError(String(err));this.rejectReady?.(err instanceof Error?err:new Error(String(err)));this.resolveReady=null;this.rejectReady=null;});
-    ws.on("close",()=>handlers.onEnded());
+    ws.on("error",err=>{this.clearWatchdog();handlers.onError(String(err));this.rejectReady?.(err instanceof Error?err:new Error(String(err)));this.resolveReady=null;this.rejectReady=null;});
+    ws.on("close",()=>{this.clearWatchdog();handlers.onEnded()});
     return this.readyPromise;
   }
 
@@ -64,8 +74,43 @@ export class AssemblyAIVoiceAdapter implements IVoiceSessionAdapter{
   }
   updateSystemPrompt(systemPrompt:string){this.send({type:"session.update",session:{system_prompt:systemPrompt}});}
   updateTools(tools:unknown[]){this.send({type:"session.update",session:{tools}});}
-  sendToolResult(callId:string,result:unknown,isError=false){this.pendingToolResults.push({callId,result,isError});}
+  /**
+   * Tool results are sent immediately rather than queued until reply.done.
+   *
+   * Previously results were buffered in pendingToolResults and flushed only on
+   * reply.done. handleToolCall awaits real I/O (repo writes, Open-Meteo, graph
+   * sync) before calling this, so any result finishing after reply.done was
+   * silently discarded — the agent then waited forever on a result that never
+   * arrived and went silent. Sending immediately removes that race entirely.
+   */
+  sendToolResult(callId:string,result:unknown,isError=false){
+   this.send({type:"tool.result",call_id:callId,result:typeof result==="string"?result:JSON.stringify(result),is_error:isError});
+  }
   requestReply(instructions?:string){this.send(instructions?{type:"reply.create",instructions}:{type:"reply.create"});}
-  end(){if(this.ws?.readyState===WebSocket.OPEN)this.send({type:"session.end"});this.ws?.close();this.ws=null;this.pendingToolResults=[];}
+  /**
+   * Ends the remote session cleanly.
+   *
+   * Previously this sent session.end and closed the socket in the same tick, so
+   * the frame was never flushed and AssemblyAI never acknowledged. It now sends
+   * session.end, waits briefly for session.ended/close, then force-closes.
+   * A handle is returned so the caller can await a confirmed end.
+   */
+  end():Promise<void>{
+   this.clearWatchdog();
+   if(!this.ws)return Promise.resolve();
+   const ws=this.ws;
+   this.ws=null;
+   return new Promise<void>(resolve=>{
+    let settled=false;
+    const finish=()=>{if(settled)return;settled=true;clearTimeout(timer);try{ws.close()}catch{};resolve()};
+    const timer=setTimeout(finish,2000);
+    try{
+     ws.once("close",finish);
+     ws.once("error",finish);
+     if(ws.readyState===WebSocket.OPEN)ws.send(JSON.stringify({type:"session.end"}));
+     else finish();
+    }catch{finish()}
+   });
+  }
   private send(payload:unknown){if(this.ws?.readyState===WebSocket.OPEN)this.ws.send(JSON.stringify(payload));}
 }

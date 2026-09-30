@@ -195,8 +195,11 @@ async function handleClientMessage(call: ActiveCall, raw: WebSocket.RawData) {
     }
     case "client_event":
       if (event.event === "end_call") {
-        call.voice.end();
+        // Mark completed only after the remote session is confirmed ended, so a
+        // half-torn-down call is never recorded as a finished claim.
+        await call.voice.end();
         await repo.setStatus(call.sessionId, "completed");
+        sendToClient(call.clientWs, { type: "call_ended" });
       } else if (event.event === "resume") {
         sendToClient(call.clientWs, { type: "session_resumed" });
       }
@@ -257,8 +260,8 @@ async function startCall(clientWs: WebSocket, sessionId: string) {
 
 async function onClientDisconnect(call: ActiveCall) {
   const session = await repo.getSession(call.sessionId);
+  await call.voice.end();
   if (session && session.status !== "completed") await repo.setStatus(call.sessionId, "paused");
-  call.voice.end();
 }
 
 async function readJson(req: http.IncomingMessage): Promise<Record<string, unknown>> {

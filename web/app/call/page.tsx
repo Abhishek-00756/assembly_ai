@@ -8,7 +8,7 @@ const LAST_SESSION_KEY="insuranos:lastSession";
 const WS_URL=process.env.NEXT_PUBLIC_ORCH_WS_URL??"ws://localhost:8787";
 const labels:Record<string,string>={opening_safety:"Opening & Safety",grounding_consent:"Grounding & Consent",narrative:"Incident Narrative",structured_gathering:"Structured Data",evidence:"Photo & Evidence",review:"Review",output_generation:"Generate Report",closing:"Next Steps"};
 const photoLabels:Record<string,string>={plate:"license plate",damage:"vehicle damage",scene:"accident scene",insurance_card:"insurance card"};
-type OrchestratorEvent={type:"phase_update";phase:string}|{type:"completeness_update";completeness:Completeness}|{type:"transcript_partial"|"transcript_final";speaker:"user"|"agent";text:string}|{type:"audio_out";audio:string}|{type:"photo_requested";photo_type:string}|{type:"report_ready";report_url:string|null;summary_text:string}|{type:"cross_insurer_update";related_session_count:number;conflicts:string[];grounded_narrative:string}|{type:"context_update";context_factors:ContextFactors}|{type:"error";message:string}|{type:"session_resumed"}|{type:"session_paused"};
+type OrchestratorEvent={type:"phase_update";phase:string}|{type:"completeness_update";completeness:Completeness}|{type:"transcript_partial"|"transcript_final";speaker:"user"|"agent";text:string}|{type:"audio_out";audio:string}|{type:"photo_requested";photo_type:string}|{type:"report_ready";report_url:string|null;summary_text:string}|{type:"cross_insurer_update";related_session_count:number;conflicts:string[];grounded_narrative:string}|{type:"context_update";context_factors:ContextFactors}|{type:"error";message:string}|{type:"session_resumed"}|{type:"session_paused"}|{type:"call_ended"};
 type ContextWeather={observed_at:string|null;temperature_c:number|null;precipitation_mm:number|null;visibility_m:number|null;wind_kmh:number|null;weather_code:number|null;description:string|null};
 type ContextTraffic={incident_count:number|null;density:"low"|"moderate"|"high"|"unavailable";provider:string|null};
 type ContextFactors={generated_at:string;provider_status:{weather:string;traffic:string};weather:ContextWeather|null;traffic:ContextTraffic|null;context_score:number|null;factors:string[]};
@@ -70,6 +70,7 @@ function CallPageContent(){
         case"audio_out":playPcm(msg.audio);break;
         case"photo_requested":setPhoto(msg.photo_type);break;
         case"report_ready":setReportUrl(msg.report_url??"");setSummaryText(msg.summary_text);try{sessionStorage.setItem(LAST_SESSION_KEY,JSON.stringify({id:sessionId,code:incidentCode,at:Date.now()}))}catch{}break;
+        case"call_ended":setConnected(false);stopMic();break;
         case"cross_insurer_update":setCrossParty(msg);break;
         case"context_update":setContext(msg.context_factors);break;
         case"error":setError(msg.message);break
